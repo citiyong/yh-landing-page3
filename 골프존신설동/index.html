@@ -1116,6 +1116,13 @@
         <button class="btn btn-secondary" onclick="goToDataTab()">데이터 관리로 이동</button>
       </div>
 
+      <div class="warning-banner" id="backupReminderBanner">
+        <div class="txt">💾 백업한 지 오래됐어요
+          <small id="backupReminderText">데이터는 이 브라우저에만 저장돼요. 지금 바로 백업해두세요.</small>
+        </div>
+        <button class="btn btn-secondary" onclick="exportData()">📤 지금 백업하기</button>
+      </div>
+
       <div class="grid-stats">
         <div class="stat-card">
           <div class="num" id="statTotalCustomers">0</div>
@@ -1505,7 +1512,11 @@
               <td class="num">${v.eagles}</td>
               <td class="num">${v.holeInOnes}</td>
               <td class="num">+${v.pointsEarned.toLocaleString()}원</td>
-              <td>${v.visitNumberAtTime === VISITS_NEEDED_FOR_FREE + 1 || v.freeVisit ? '<span class="tag">무료쿠폰</span>' : ''}</td>
+              <td>
+                ${v.freeVisit ? '<span class="tag">무료쿠폰</span>' : ''}
+                <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="editVisitRecord('${v.id}')" title="수정">✏️</button>
+                <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="deleteVisitRecord('${v.id}')" title="삭제">🗑</button>
+              </td>
             </tr>
           `).join('')}
         </tbody>
@@ -1600,6 +1611,108 @@
       }
     }
 
+    // ---------- 방문 기록 수정/삭제 후 재계산 ----------
+    // 방문 순서(날짜)를 기준으로 방문횟수/적립금/무료쿠폰 사이클을 처음부터 다시 계산한다.
+    // 어느 시점의 기록을 수정/삭제하든 항상 정확한 누적값을 유지하기 위함.
+    function recalcCustomerFromVisits(customerId) {
+      const customers = getCustomers();
+      const c = customers.find(x => x.id === customerId);
+      if (!c) return;
+
+      const allVisits = getVisits();
+      const myVisits = allVisits.filter(v => v.customerId === customerId)
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+      const existingCoupons = getCoupons().filter(cp => cp.customerId === customerId);
+      const otherCoupons = getCoupons().filter(cp => cp.customerId !== customerId);
+
+      let runningCount = 0;
+      let totalPoints = 0;
+      let couponIdx = 0;
+      const rebuiltCoupons = [];
+
+      myVisits.forEach(v => {
+        const isFree = runningCount >= VISITS_NEEDED_FOR_FREE;
+        runningCount += 1;
+        const rawPoints = v.birdies * POINT.BIRDIE + v.eagles * POINT.EAGLE + v.holeInOnes * POINT.HOLE_IN_ONE;
+        const points = isFree ? 0 : rawPoints;
+
+        v.pointsEarned = points;
+        v.visitNumberAtTime = runningCount;
+        v.freeVisit = isFree;
+        totalPoints += points;
+
+        if (isFree) {
+          const reuse = existingCoupons[couponIdx];
+          rebuiltCoupons.push({
+            id: reuse ? reuse.id : uid(),
+            customerId,
+            redeemedAt: v.date,
+            cycleVisitTotal: runningCount
+          });
+          couponIdx++;
+          runningCount = 0;
+        }
+      });
+
+      c.visitCount = runningCount;
+      c.totalPoints = totalPoints;
+
+      saveData(LS_KEYS.visits, allVisits);
+      saveData(LS_KEYS.coupons, otherCoupons.concat(rebuiltCoupons));
+      saveData(LS_KEYS.customers, customers);
+    }
+
+    function formatDateForEdit(iso) {
+      const d = new Date(iso);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function editVisitRecord(visitId) {
+      const visits = getVisits();
+      const v = visits.find(x => x.id === visitId);
+      if (!v) return;
+
+      const dateStr = prompt('방문 날짜/시간 수정 (예: 2026-07-19 14:30)', formatDateForEdit(v.date));
+      if (dateStr === null) return;
+      const parsedDate = new Date(dateStr.trim().replace(' ', 'T'));
+      if (isNaN(parsedDate.getTime())) {
+        alert('날짜 형식을 이해하지 못했어요. "2026-07-19 14:30" 형식으로 입력해주세요.');
+        return;
+      }
+
+      const birdieStr = prompt('버디 개수', String(v.birdies));
+      if (birdieStr === null) return;
+      const eagleStr = prompt('이글 개수', String(v.eagles));
+      if (eagleStr === null) return;
+      const hioStr = prompt('홀인원 개수', String(v.holeInOnes));
+      if (hioStr === null) return;
+
+      v.date = parsedDate.toISOString();
+      v.birdies = Math.max(0, parseInt(birdieStr, 10) || 0);
+      v.eagles = Math.max(0, parseInt(eagleStr, 10) || 0);
+      v.holeInOnes = Math.max(0, parseInt(hioStr, 10) || 0);
+      saveData(LS_KEYS.visits, visits);
+
+      recalcCustomerFromVisits(v.customerId);
+      renderCustomerDetail(v.customerId);
+      renderDashboard();
+    }
+
+    function deleteVisitRecord(visitId) {
+      const visits = getVisits();
+      const v = visits.find(x => x.id === visitId);
+      if (!v) return;
+      if (!confirm('이 방문 기록을 삭제할까요?\n삭제 후 해당 고객의 누적 방문횟수·적립금·무료쿠폰 사이클이 자동으로 다시 계산됩니다.')) return;
+
+      const remaining = visits.filter(x => x.id !== visitId);
+      saveData(LS_KEYS.visits, remaining);
+
+      recalcCustomerFromVisits(v.customerId);
+      renderCustomerDetail(v.customerId);
+      renderDashboard();
+    }
+
     // ---------- 대시보드 ----------
     function renderDashboard() {
       const customers = getCustomers();
@@ -1655,6 +1768,7 @@
       }
 
       checkStorageWarning();
+      checkBackupReminder();
     }
 
     function goToDataTab() {
@@ -1823,6 +1937,32 @@
       a.download = `golfpark-shinseol24-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
+
+      localStorage.setItem('golfLastBackupAt', new Date().toISOString());
+      checkBackupReminder();
+    }
+
+    // ---------- 백업 리마인더 ----------
+    // localStorage는 이 브라우저(기기)에만 저장되고 서버 동기화가 없어서,
+    // 브라우저 데이터 삭제/다른 기기 접속 시 데이터가 통째로 사라질 수 있음.
+    // 주기적인 내보내기(백업)를 유도해 데이터 손실 위험을 줄인다.
+    function checkBackupReminder() {
+      const banner = document.getElementById('backupReminderBanner');
+      const lastBackup = localStorage.getItem('golfLastBackupAt');
+      const hasData = getCustomers().length > 0 || getVisits().length > 0;
+
+      if (!hasData) { banner.classList.remove('show'); return; }
+
+      const hoursSince = lastBackup ? (Date.now() - new Date(lastBackup).getTime()) / 3600000 : Infinity;
+
+      if (hoursSince >= 24) {
+        banner.classList.add('show');
+        document.getElementById('backupReminderText').textContent = lastBackup
+          ? `마지막 백업: ${Math.floor(hoursSince / 24)}일 전. 데이터는 이 브라우저에만 저장되니 정기적으로 백업해주세요.`
+          : '아직 한 번도 백업하지 않았어요. 데이터는 이 브라우저에만 저장되니 지금 백업해주세요.';
+      } else {
+        banner.classList.remove('show');
+      }
     }
 
     function importData(event) {
