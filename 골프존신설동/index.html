@@ -1318,7 +1318,7 @@
       <p class="modal-sub" id="prizeModalName">-</p>
       <div style="font-family:var(--font-display);font-size:34px;font-weight:700;color:var(--gold);margin:18px 0;text-shadow:0 0 20px var(--gold-glow);"
         id="prizeModalAmount">0원 할인</div>
-      <p class="muted" style="margin-bottom:20px;">오늘 바로 사용하셔도 되고, 다음 방문 때 사용하셔도 돼요.<br>고객 상세 화면의 "뽑기 할인쿠폰" 목록에서 언제든 사용 처리할 수 있어요.</p>
+      <p class="muted" style="margin-bottom:20px;" id="prizeModalDesc">오늘 바로 사용하셔도 되고, 다음 방문 때 사용하셔도 돼요.<br>고객 상세 화면의 "뽑기 할인쿠폰" 목록에서 언제든 사용 처리할 수 있어요.</p>
       <button class="btn btn-primary btn-block" onclick="closePrizeModal()">확인</button>
     </div>
   </div>
@@ -1336,8 +1336,13 @@
 
     const POINT = { BIRDIE: 200, EAGLE: 1000, HOLE_IN_ONE: 20000 };
     const VISITS_NEEDED_FOR_FREE = 10; // 도장 10개 -> 무료 게임
-    const VISITS_FOR_LOTTERY = 5;      // 사이클 내 5번째 실방문 -> 도장 2개 인정 + 뽑기 추첨
-    const PRIZE_OPTIONS = [1000, 2000, 3000]; // 뽑기 상품(할인 금액, 원) - 동일 확률
+    const VISITS_FOR_LOTTERY = 5;      // 사이클 내 5번째 실방문 -> 뽑기 추첨 1회
+    const PRIZE_OPTIONS = [
+      { type: 'stamp' },                  // 도장 1개 추가 당첨
+      { type: 'discount', amount: 1000 },
+      { type: 'discount', amount: 2000 },
+      { type: 'discount', amount: 3000 }
+    ]; // 뽑기 상품 - 4개 중 1개, 동일 확률 (도장 추가도 확정이 아니라 뽑기 결과 중 하나)
 
     const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs' };
 
@@ -1555,13 +1560,13 @@
       const isReady = c.visitCount >= VISITS_NEEDED_FOR_FREE;
 
       // 야간 조명 스탬프판 (10개 lamp + 1개 free lamp)
-      // 5번째 실방문에는 도장이 2개(5·6번 lamp) 한번에 채워지므로, 5번 lamp에 뽑기 체크포인트 표시를 해둔다.
+      // 5번째 실방문은 뽑기 체크포인트: 뽑기 결과가 "도장 1개 추가"이면 5·6번 lamp가 한번에 채워짐
       let lamps = '';
       for (let i = 1; i <= VISITS_NEEDED_FOR_FREE; i++) {
         const lit = i <= c.visitCount;
         const isCheckpoint = i === VISITS_FOR_LOTTERY;
         const label = lit ? '✓' : (isCheckpoint ? '🎲' : i);
-        lamps += `<div class="lamp ${lit ? 'lit' : ''} ${isCheckpoint ? 'checkpoint' : ''}" ${isCheckpoint ? 'title="5번째 방문: 도장 2개 + 뽑기"' : ''}>${label}</div>`;
+        lamps += `<div class="lamp ${lit ? 'lit' : ''} ${isCheckpoint ? 'checkpoint' : ''}" ${isCheckpoint ? 'title="5번째 방문: 뽑기 (도장 1개 추가 또는 할인쿠폰 중 1개 당첨)"' : ''}>${label}</div>`;
       }
       lamps += `<div class="lamp free ${isReady ? 'lit' : ''}">FREE</div>`;
 
@@ -1588,7 +1593,7 @@
 
       <div class="light-track-wrap">
         <div class="light-track">${lamps}</div>
-        <div class="track-caption">${isReady ? '10번째 방문은 무료입니다 🎁' : `${VISITS_NEEDED_FOR_FREE - c.visitCount}개 도장 더 채우면 무료 게임 쿠폰! (5번째 실방문은 도장 2개 + 뽑기)`}</div>
+        <div class="track-caption">${isReady ? '10번째 방문은 무료입니다 🎁' : `${VISITS_NEEDED_FOR_FREE - c.visitCount}개 도장 더 채우면 무료 게임 쿠폰! (5번째 실방문은 뽑기 찬스)`}</div>
       </div>
 
       <div class="stat-row">
@@ -1599,7 +1604,7 @@
       </div>
 
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎰 뽑기 할인쿠폰</h3>
-      ${myPrizes.length === 0 ? '<div class="empty-hint">아직 뽑기 당첨 이력이 없어요. (5번째 방문마다 자동 추첨)</div>' : `
+      ${myPrizes.length === 0 ? '<div class="empty-hint">아직 할인쿠폰 당첨 이력이 없어요. (5번째 방문마다 뽑기 — 도장 1개 추가로 당첨될 수도 있어요)</div>' : `
       <div class="prize-list" style="margin-bottom:22px;">
         ${myPrizes.map(p => `
           <div class="imminent-row">
@@ -1627,7 +1632,7 @@
               <td class="num">+${v.pointsEarned.toLocaleString()}원</td>
               <td>
                 ${v.freeVisit ? '<span class="tag">무료쿠폰</span>' : ''}
-                ${v.bonusStamp ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲도장+뽑기</span>' : ''}
+                ${v.bonusStamp ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲도장+뽑기</span>' : (v.lotteryVisit ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲뽑기</span>' : '')}
                 <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="editVisitRecord('${v.id}')" title="수정">✏️</button>
                 <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="deleteVisitRecord('${v.id}')" title="삭제">🗑</button>
               </td>
@@ -1653,16 +1658,21 @@
       updateCounterDisplay();
       document.getElementById('visitModalName').textContent = isFreeVisit
         ? `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 🎁 무료 게임 방문 (10번째 · 적립 없음)`
-        : `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회${willHitLottery ? ' 🎲 이번 방문은 5번째! 도장 2개 + 뽑기' : ''}`;
+        : `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회${willHitLottery ? ' 🎲 이번 방문은 5번째! 뽑기 찬스' : ''}`;
       overlay.classList.add('show');
     }
     function closeVisitModal() {
       document.getElementById('visitModalOverlay').classList.remove('show');
     }
 
-    function showPrizeResultModal(customer, amount) {
+    function showPrizeResultModal(customer, prize) {
       document.getElementById('prizeModalName').textContent = `${customer.name || ''} ${customer.nickname ? '· ' + customer.nickname : ''} 님, 5번째 방문 축하드려요!`;
-      document.getElementById('prizeModalAmount').textContent = `${amount.toLocaleString()}원 할인`;
+      document.getElementById('prizeModalAmount').textContent = prize.type === 'stamp'
+        ? '🎯 도장 1개 추가 당첨!'
+        : `${prize.amount.toLocaleString()}원 할인`;
+      document.getElementById('prizeModalDesc').textContent = prize.type === 'stamp'
+        ? '도장이 자동으로 1개 더 채워졌어요. 스탬프판에서 바로 확인하실 수 있어요.'
+        : '오늘 바로 사용하셔도 되고, 다음 방문 때 사용하셔도 돼요. 고객 상세 화면의 "뽑기 할인쿠폰" 목록에서 언제든 사용 처리할 수 있어요.';
       document.getElementById('prizeModalOverlay').classList.add('show');
     }
     function closePrizeModal() {
@@ -1693,6 +1703,7 @@
       const points = isFreeVisit ? 0 : rawPoints; // 무료 방문은 버디/이글/홀인원 적립 없음
 
       let bonusStamp = false;
+      let lotteryVisit = false;
       let prizeAmount = null;
 
       if (isFreeVisit) {
@@ -1700,10 +1711,16 @@
       } else {
         c.cycleVisits = (c.cycleVisits || 0) + 1;
         if (c.cycleVisits === VISITS_FOR_LOTTERY) {
-          // 5번째 실방문 -> 도장 2개 인정 + 뽑기 추첨
-          bonusStamp = true;
-          c.visitCount += 2;
-          prizeAmount = drawPrize();
+          // 5번째 실방문 -> 뽑기 추첨 1회 (도장 1개 추가 or 할인쿠폰 중 하나, 동일 확률)
+          lotteryVisit = true;
+          const prize = drawPrize();
+          if (prize.type === 'stamp') {
+            bonusStamp = true;
+            c.visitCount += 2;
+          } else {
+            c.visitCount += 1;
+            prizeAmount = prize.amount;
+          }
         } else {
           c.visitCount += 1;
         }
@@ -1722,7 +1739,8 @@
         pointsEarned: points,
         visitNumberAtTime: c.visitCount,
         freeVisit: isFreeVisit,
-        bonusStamp: bonusStamp
+        bonusStamp: bonusStamp,
+        lotteryVisit: lotteryVisit
       });
       saveData(LS_KEYS.visits, visits);
 
@@ -1766,8 +1784,9 @@
         setTimeout(() => alert(`🎉 ${c.name || c.nickname} 님, 도장 ${c.visitCount}개 달성!\n다음 방문은 자동으로 무료 게임 처리됩니다.`), 100);
       }
 
-      if (prizeAmount !== null) {
-        setTimeout(() => showPrizeResultModal(c, prizeAmount), isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 250 : 100);
+      if (lotteryVisit) {
+        const prizeResult = bonusStamp ? { type: 'stamp' } : { type: 'discount', amount: prizeAmount };
+        setTimeout(() => showPrizeResultModal(c, prizeResult), isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 250 : 100);
       }
     }
 
@@ -1792,7 +1811,6 @@
       let cycleVisits = 0;  // 현재 사이클의 실방문 횟수
       let totalPoints = c.archivedPoints || 0; // 이력 정리로 삭제된 방문의 적립금 baseline부터 시작
       let couponIdx = 0;
-      let prizeIdx = 0;
       const rebuiltCoupons = [];
       const rebuiltPrizes = [];
 
@@ -1801,14 +1819,38 @@
         const rawPoints = v.birdies * POINT.BIRDIE + v.eagles * POINT.EAGLE + v.holeInOnes * POINT.HOLE_IN_ONE;
         const points = isFree ? 0 : rawPoints;
         let bonusStamp = false;
+        let lotteryVisit = false;
+        let discountAmount = null;
+        // 이 방문이 이미 이전에 5번째 자리를 차지해 당첨 결과가 확정된 적이 있다면(수정/삭제 이전),
+        // 재추첨하지 않고 그 결과를 그대로 유지한다 (기존 도장/할인쿠폰 데이터가 사후에 뒤바뀌지 않도록).
+        const reusePrize = existingPrizes.find(p => p.visitId === v.id) || null;
 
         if (isFree) {
           runningCount += 1;
         } else {
           cycleVisits += 1;
           if (cycleVisits === VISITS_FOR_LOTTERY) {
-            bonusStamp = true;
-            runningCount += 2;
+            lotteryVisit = true;
+            if (v.bonusStamp || v.lotteryVisit) {
+              // 이미 결과가 확정된 방문(구버전 도장+할인쿠폰 동시지급 데이터 포함) -> 재추첨하지 않고 그대로 유지
+              bonusStamp = !!v.bonusStamp;
+              runningCount += bonusStamp ? 2 : 1;
+              if (reusePrize) {
+                discountAmount = reusePrize.amount; // 구버전에서 도장+할인쿠폰을 동시에 받았던 기록도 그대로 보존
+              } else if (!bonusStamp) {
+                discountAmount = PRIZE_OPTIONS.find(p => p.type === 'discount').amount; // 안전한 기본값(원본 기록 유실 시)
+              }
+            } else {
+              // 방문 수정/삭제로 이 방문이 처음으로 5번째 자리를 차지하게 됨 -> 새로 추첨
+              const prize = drawPrize();
+              if (prize.type === 'stamp') {
+                bonusStamp = true;
+                runningCount += 2;
+              } else {
+                runningCount += 1;
+                discountAmount = prize.amount;
+              }
+            }
           } else {
             runningCount += 1;
           }
@@ -1818,21 +1860,20 @@
         v.visitNumberAtTime = runningCount;
         v.freeVisit = isFree;
         v.bonusStamp = bonusStamp;
+        v.lotteryVisit = lotteryVisit;
         totalPoints += points;
 
-        if (bonusStamp) {
-          // 기존에 같은 순번으로 당첨된 기록이 있으면 금액/사용여부는 그대로 유지하고 시점만 갱신
-          const reuse = existingPrizes[prizeIdx];
+        if (lotteryVisit && discountAmount !== null) {
+          // 할인쿠폰 당첨: 기존 기록이 있으면 금액/사용여부는 그대로 유지하고 시점만 갱신
           rebuiltPrizes.push({
-            id: reuse ? reuse.id : uid(),
+            id: reusePrize ? reusePrize.id : uid(),
             customerId,
             visitId: v.id,
-            amount: reuse ? reuse.amount : drawPrize(),
+            amount: discountAmount,
             wonAt: v.date,
-            status: reuse ? reuse.status : 'unused',
-            usedAt: reuse ? reuse.usedAt : null
+            status: reusePrize ? reusePrize.status : 'unused',
+            usedAt: reusePrize ? reusePrize.usedAt : null
           });
-          prizeIdx++;
         }
 
         if (isFree) {
