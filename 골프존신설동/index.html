@@ -1338,11 +1338,11 @@
     const VISITS_NEEDED_FOR_FREE = 10; // 도장 10개 -> 무료 게임
     const VISITS_FOR_LOTTERY = 5;      // 사이클 내 5번째 실방문 -> 뽑기 추첨 1회
     const PRIZE_OPTIONS = [
-      { type: 'stamp' },                  // 도장 1개 추가 당첨
-      { type: 'discount', amount: 1000 },
-      { type: 'discount', amount: 2000 },
-      { type: 'discount', amount: 3000 }
-    ]; // 뽑기 상품 - 4개 중 1개, 동일 확률 (도장 추가도 확정이 아니라 뽑기 결과 중 하나)
+      { type: 'stamp', weight: 10 },                  // 도장 1개 추가 당첨
+      { type: 'discount', amount: 1000, weight: 55 },
+      { type: 'discount', amount: 2000, weight: 20 },
+      { type: 'discount', amount: 3000, weight: 15 }
+    ]; // 뽑기 상품 - 가중치 합 100 (도장10% / 1000원55% / 2000원20% / 3000원15%)
 
     const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs' };
 
@@ -1438,7 +1438,15 @@
     function getCoupons() { return loadData(LS_KEYS.coupons); }
     function getPrizes() { return loadData(LS_KEYS.prizes); }
     function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-    function drawPrize() { return PRIZE_OPTIONS[Math.floor(Math.random() * PRIZE_OPTIONS.length)]; }
+    function drawPrize() {
+      const totalWeight = PRIZE_OPTIONS.reduce((sum, p) => sum + p.weight, 0);
+      let r = Math.random() * totalWeight;
+      for (const p of PRIZE_OPTIONS) {
+        if (r < p.weight) return p;
+        r -= p.weight;
+      }
+      return PRIZE_OPTIONS[PRIZE_OPTIONS.length - 1];
+    }
     function downloadJson(filename, payload) {
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
