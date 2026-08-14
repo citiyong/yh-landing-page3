@@ -1323,6 +1323,20 @@
     </div>
   </div>
 
+  <!-- ================= 적립금 1,000원 단위 차감 안내 모달 ================= -->
+  <div class="overlay" id="discountModalOverlay">
+    <div class="modal" style="text-align:center;">
+      <button class="close-x" onclick="closeDiscountModal()">✕</button>
+      <div style="font-size:44px;margin:6px 0 10px;">💰</div>
+      <h3 style="margin-bottom:2px;">적립금 차감 안내</h3>
+      <p class="modal-sub" id="discountModalName">-</p>
+      <div style="font-family:var(--font-display);font-size:34px;font-weight:700;color:var(--turf);margin:18px 0;"
+        id="discountModalAmount">0원</div>
+      <p class="muted" style="margin-bottom:20px;" id="discountModalDesc">오늘 게임비에서 이 금액만큼 차감해 주세요.</p>
+      <button class="btn btn-primary btn-block" onclick="closeDiscountModal()">확인</button>
+    </div>
+  </div>
+
   <script>
     /* =========================================================
        골프존파크 신설24시 · 고객 방문 & 적립 관리 시스템
@@ -1337,6 +1351,16 @@
     const POINT = { BIRDIE: 200, EAGLE: 1000, HOLE_IN_ONE: 20000 };
     const VISITS_NEEDED_FOR_FREE = 10; // 도장 10개 -> 무료 게임
     const VISITS_FOR_LOTTERY = 5;      // 사이클 내 5번째 실방문 -> 뽑기 추첨 1회
+    const POINT_DISCOUNT_UNIT = 1000;  // 적립금이 이 단위를 넘길 때마다 그만큼 즉시 차감(당일 게임비 할인으로 사용 처리)
+
+    // 적립금이 oldTotal -> oldTotal+pointsAdded 로 늘어날 때 1,000원 단위를 몇 번 넘겼는지 계산해서
+    // 그만큼 차감한 잔액과 차감액을 반환한다. (예: 800원 + 400원 = 1,200원 -> 1,000원 차감, 잔액 200원)
+    function applyPointsDiscount(oldTotal, pointsAdded) {
+      const newTotalBeforeDiscount = oldTotal + pointsAdded;
+      const units = Math.floor(newTotalBeforeDiscount / POINT_DISCOUNT_UNIT) - Math.floor(oldTotal / POINT_DISCOUNT_UNIT);
+      const discount = units * POINT_DISCOUNT_UNIT;
+      return { newTotal: newTotalBeforeDiscount - discount, discount, units };
+    }
     const PRIZE_OPTIONS = [
       { type: 'stamp', weight: 10 },                  // 도장 1개 추가 당첨
       { type: 'discount', amount: 1000, weight: 55 },
@@ -1641,6 +1665,7 @@
               <td>
                 ${v.freeVisit ? '<span class="tag">무료쿠폰</span>' : ''}
                 ${v.bonusStamp ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲도장+뽑기</span>' : (v.lotteryVisit ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲뽑기</span>' : '')}
+                ${v.discountApplied ? `<span class="tag" style="background:rgba(90,180,120,0.25);">🪙${v.discountApplied.toLocaleString()}원 차감</span>` : ''}
                 <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="editVisitRecord('${v.id}')" title="수정">✏️</button>
                 <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="deleteVisitRecord('${v.id}')" title="삭제">🗑</button>
               </td>
@@ -1685,6 +1710,16 @@
     }
     function closePrizeModal() {
       document.getElementById('prizeModalOverlay').classList.remove('show');
+    }
+
+    function showDiscountModal(customer, amount, units) {
+      document.getElementById('discountModalName').textContent = `${customer.name || ''} ${customer.nickname ? '· ' + customer.nickname : ''} 님, 적립금이 1,000원 단위를 ${units}회 채웠어요!`;
+      document.getElementById('discountModalAmount').textContent = `${amount.toLocaleString()}원`;
+      document.getElementById('discountModalDesc').textContent = `오늘 게임비에서 ${amount.toLocaleString()}원만큼 차감해 주세요.`;
+      document.getElementById('discountModalOverlay').classList.add('show');
+    }
+    function closeDiscountModal() {
+      document.getElementById('discountModalOverlay').classList.remove('show');
     }
     function changeCounter(type, delta) {
       const key = type === 'birdie' ? 'birdie' : type === 'eagle' ? 'eagle' : 'hio';
@@ -1733,7 +1768,8 @@
           c.visitCount += 1;
         }
       }
-      c.totalPoints += points;
+      const { newTotal, discount, units } = applyPointsDiscount(c.totalPoints, points);
+      c.totalPoints = newTotal;
 
       const visitId = uid();
       const visits = getVisits();
@@ -1748,7 +1784,8 @@
         visitNumberAtTime: c.visitCount,
         freeVisit: isFreeVisit,
         bonusStamp: bonusStamp,
-        lotteryVisit: lotteryVisit
+        lotteryVisit: lotteryVisit,
+        discountApplied: discount
       });
       saveData(LS_KEYS.visits, visits);
 
@@ -1795,6 +1832,10 @@
       if (lotteryVisit) {
         const prizeResult = bonusStamp ? { type: 'stamp' } : { type: 'discount', amount: prizeAmount };
         setTimeout(() => showPrizeResultModal(c, prizeResult), isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 250 : 100);
+      }
+
+      if (discount > 0) {
+        setTimeout(() => showDiscountModal(c, discount, units), 100 + (isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 150 : 0) + (lotteryVisit ? 150 : 0));
       }
     }
 
@@ -1864,12 +1905,15 @@
           }
         }
 
+        const { newTotal, discount } = applyPointsDiscount(totalPoints, points);
+        totalPoints = newTotal;
+
         v.pointsEarned = points;
         v.visitNumberAtTime = runningCount;
         v.freeVisit = isFree;
         v.bonusStamp = bonusStamp;
         v.lotteryVisit = lotteryVisit;
-        totalPoints += points;
+        v.discountApplied = discount;
 
         if (lotteryVisit && discountAmount !== null) {
           // 할인쿠폰 당첨: 기존 기록이 있으면 금액/사용여부는 그대로 유지하고 시점만 갱신
@@ -2027,7 +2071,7 @@
         todayListEl.innerHTML = todayVisits.slice().reverse().map(v => {
           const c = customers.find(x => x.id === v.customerId);
           return `<div class="imminent-row"><span class="name">${escapeHtml(c ? (c.name || c.nickname) : '(삭제된 고객)')}</span>
-        <span class="muted">버디${v.birdies} · 이글${v.eagles} · 홀인원${v.holeInOnes} · <b style="color:var(--turf)">+${v.pointsEarned.toLocaleString()}원</b></span></div>`;
+        <span class="muted">버디${v.birdies} · 이글${v.eagles} · 홀인원${v.holeInOnes} · <b style="color:var(--turf)">+${v.pointsEarned.toLocaleString()}원</b>${v.discountApplied ? ` · <b style="color:var(--gold)">🪙${v.discountApplied.toLocaleString()}원 차감</b>` : ''}</span></div>`;
         }).join('');
       }
 
