@@ -1342,25 +1342,17 @@
        골프존파크 신설24시 · 고객 방문 & 적립 관리 시스템
        - 순수 JS + localStorage, 외부 서버 없음
        - 데이터 모델
-         golfCustomers   : [{id,name,nickname,phone,registeredAt,visitCount,cycleVisits,totalPoints,archivedPoints}]  // archivedPoints: 이력 정리로 삭제된 방문의 적립금 baseline
-         golfVisitLogs   : [{id,customerId,date,birdies,eagles,holeInOnes,pointsEarned,visitNumberAtTime,freeVisit,bonusStamp}]
-         golfCouponLogs  : [{id,customerId,redeemedAt,cycleVisitTotal}]  // 무료쿠폰 사용 기록 (유효기간 없음)
+         golfCustomers   : [{id,name,nickname,phone,registeredAt,visitCount,cycleVisits,totalPoints,archivedPoints}]  // archivedPoints: 이력 정리로 삭제된 방문/차감의 적립금 순증감 baseline
+         golfVisitLogs   : [{id,customerId,date,birdies,eagles,holeInOnes,pointsEarned,visitNumberAtTime,couponEarned,bonusStamp}]
+         golfCouponLogs  : [{id,customerId,visitId,redeemedAt,cycleVisitTotal,status,usedAt}]  // 10회 방문 무료쿠폰 (발급 시 unused, 유효기간 없음, 원하는 날 "사용 처리")
          golfPrizeLogs   : [{id,customerId,visitId,amount,wonAt,status,usedAt}]  // 5회 방문 뽑기 할인쿠폰 (유효기간 없음)
+         golfPointDeductionLogs : [{id,customerId,amount,deductedAt}]  // "적립금 차감" 버튼으로 원하는 때 원하는 금액만큼 차감한 이력 (되돌리기 없음)
        ========================================================= */
 
     const POINT = { BIRDIE: 200, EAGLE: 1000, HOLE_IN_ONE: 20000 };
     const VISITS_NEEDED_FOR_FREE = 10; // 도장 10개 -> 무료 게임
     const VISITS_FOR_LOTTERY = 5;      // 사이클 내 5번째 실방문 -> 뽑기 추첨 1회
-    const POINT_DISCOUNT_UNIT = 1000;  // 적립금이 이 단위를 넘길 때마다 그만큼 즉시 차감(당일 게임비 할인으로 사용 처리)
 
-    // 적립금이 oldTotal -> oldTotal+pointsAdded 로 늘어날 때 1,000원 단위를 몇 번 넘겼는지 계산해서
-    // 그만큼 차감한 잔액과 차감액을 반환한다. (예: 800원 + 400원 = 1,200원 -> 1,000원 차감, 잔액 200원)
-    function applyPointsDiscount(oldTotal, pointsAdded) {
-      const newTotalBeforeDiscount = oldTotal + pointsAdded;
-      const units = Math.floor(newTotalBeforeDiscount / POINT_DISCOUNT_UNIT) - Math.floor(oldTotal / POINT_DISCOUNT_UNIT);
-      const discount = units * POINT_DISCOUNT_UNIT;
-      return { newTotal: newTotalBeforeDiscount - discount, discount, units };
-    }
     const PRIZE_OPTIONS = [
       { type: 'stamp', weight: 10 },                  // 도장 1개 추가 당첨
       { type: 'discount', amount: 1000, weight: 55 },
@@ -1368,7 +1360,7 @@
       { type: 'discount', amount: 3000, weight: 15 }
     ]; // 뽑기 상품 - 가중치 합 100 (도장10% / 1000원55% / 2000원20% / 3000원15%)
 
-    const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs' };
+    const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs', deductions: 'golfPointDeductionLogs' };
 
     // ---------- 화면 잠금 ----------
     const DEFAULT_LOCK_PASSWORD_HASH = 'f398d545c2ebfa0077b6d925e9d396cebf2c0a982700605fcf96b14731f88d58';
@@ -1461,7 +1453,10 @@
     function getVisits() { return loadData(LS_KEYS.visits); }
     function getCoupons() { return loadData(LS_KEYS.coupons); }
     function getPrizes() { return loadData(LS_KEYS.prizes); }
+    function getDeductions() { return loadData(LS_KEYS.deductions); }
     function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+    // 구버전 쿠폰 기록(status 필드 없음)은 발급 = 즉시사용 방식이었으므로 항상 사용완료로 간주한다.
+    function couponStatus(cp) { return cp.status || 'used'; }
     function drawPrize() {
       const totalWeight = PRIZE_OPTIONS.reduce((sum, p) => sum + p.weight, 0);
       let r = Math.random() * totalWeight;
@@ -1589,7 +1584,12 @@
       if (!c) { container.innerHTML = ''; return; }
 
       const visits = getVisits().filter(v => v.customerId === id).sort((a, b) => new Date(b.date) - new Date(a.date));
-      const isReady = c.visitCount >= VISITS_NEEDED_FOR_FREE;
+
+      // 보유 무료쿠폰(도장 10개 완성 시 발급)
+      const myCoupons = getCoupons().filter(cp => cp.customerId === id).sort((a, b) => new Date(b.redeemedAt) - new Date(a.redeemedAt));
+      const unusedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'unused');
+      const usedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'used');
+      const isReady = unusedCoupons.length > 0;
 
       // 야간 조명 스탬프판 (10개 lamp + 1개 free lamp)
       // 5번째 실방문은 뽑기 체크포인트: 뽑기 결과가 "도장 1개 추가"이면 5·6번 lamp가 한번에 채워짐
@@ -1607,6 +1607,9 @@
       const unusedPrizes = myPrizes.filter(p => p.status === 'unused');
       const unusedPrizeTotal = unusedPrizes.reduce((sum, p) => sum + p.amount, 0);
 
+      // 적립금 차감 내역
+      const myDeductions = getDeductions().filter(d => d.customerId === id).sort((a, b) => new Date(b.deductedAt) - new Date(a.deductedAt));
+
       container.innerHTML = `
     <div class="card">
       <div class="customer-header">
@@ -1618,22 +1621,41 @@
       </div>
 
       <div class="coupon-banner ${isReady ? 'show' : ''}">
-        <div class="txt">🎉 무료 게임 쿠폰 사용 가능!
-          <small>10회 방문을 채웠어요. "오늘 방문 등록"을 누르면 이번 방문은 자동으로 무료 처리되고 적립 없이 기록됩니다.</small>
+        <div class="txt">🎉 무료 게임 쿠폰 보유 중! (${unusedCoupons.length}장)
+          <small>고객이 원하는 날 방문하시면, 아래 "🎟 보유 무료쿠폰" 목록에서 "사용 처리" 버튼을 눌러주세요.</small>
         </div>
       </div>
 
       <div class="light-track-wrap">
         <div class="light-track">${lamps}</div>
-        <div class="track-caption">${isReady ? '10번째 방문은 무료입니다 🎁' : `${VISITS_NEEDED_FOR_FREE - c.visitCount}개 도장 더 채우면 무료 게임 쿠폰! (5번째 실방문은 뽑기 찬스)`}</div>
+        <div class="track-caption">${isReady ? '무료쿠폰을 원하는 날 사용해주세요 🎁' : `${VISITS_NEEDED_FOR_FREE - c.visitCount}개 도장 더 채우면 무료 게임 쿠폰 발급! (5번째 실방문은 뽑기 찬스)`}</div>
       </div>
 
       <div class="stat-row">
         <div class="mini-stat"><div class="v">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}</div><div class="l">현재 사이클 도장 수</div></div>
-        <div class="mini-stat"><div class="v" style="color:var(--turf)">${c.totalPoints.toLocaleString()}원</div><div class="l">누적 적립금</div></div>
-        <div class="mini-stat"><div class="v" style="color:var(--gold)">${getCoupons().filter(cp => cp.customerId === c.id).length}회</div><div class="l">누적 무료쿠폰 사용</div></div>
+        <div class="mini-stat">
+          <div class="v" style="color:var(--turf)">${c.totalPoints.toLocaleString()}원</div>
+          <div class="l">누적 적립금</div>
+          ${c.totalPoints > 0 ? `<button class="btn btn-secondary" style="margin-top:6px;padding:4px 10px;font-size:11px;" onclick="deductPoints('${c.id}')">💰 적립금 차감</button>` : ''}
+        </div>
+        <div class="mini-stat"><div class="v" style="color:var(--gold)">${usedCoupons.length}회</div><div class="l">누적 무료쿠폰 사용</div></div>
         <div class="mini-stat"><div class="v" style="color:var(--gold)">${unusedPrizes.length}장 (${unusedPrizeTotal.toLocaleString()}원)</div><div class="l">보유 중인 할인쿠폰</div></div>
       </div>
+
+      <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎟 보유 무료쿠폰</h3>
+      ${myCoupons.length === 0 ? '<div class="empty-hint">아직 발급된 무료쿠폰이 없어요. (도장 10개를 채우면 자동 발급돼요)</div>' : `
+      <div class="prize-list" style="margin-bottom:22px;">
+        ${myCoupons.map(cp => `
+          <div class="imminent-row">
+            <span class="name">무료 게임 쿠폰
+              <span class="muted" style="margin-left:6px;">발급일 ${new Date(cp.redeemedAt).toLocaleDateString('ko-KR')}${couponStatus(cp) === 'used' && cp.usedAt ? ' · 사용일 ' + new Date(cp.usedAt).toLocaleDateString('ko-KR') : ''}</span>
+            </span>
+            ${couponStatus(cp) === 'unused'
+        ? `<button class="btn btn-gold" style="padding:6px 12px;font-size:12px;" onclick="markCouponUsed('${cp.id}')">사용 처리</button>`
+        : `<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--text-muted);">사용완료</span>`}
+          </div>
+        `).join('')}
+      </div>`}
 
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎰 뽑기 할인쿠폰</h3>
       ${myPrizes.length === 0 ? '<div class="empty-hint">아직 할인쿠폰 당첨 이력이 없어요. (5번째 방문마다 뽑기 — 도장 1개 추가로 당첨될 수도 있어요)</div>' : `
@@ -1646,6 +1668,18 @@
             ${p.status === 'unused'
         ? `<button class="btn btn-gold" style="padding:6px 12px;font-size:12px;" onclick="markPrizeUsed('${p.id}')">사용 처리</button>`
         : `<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--text-muted);">사용완료</span>`}
+          </div>
+        `).join('')}
+      </div>`}
+
+      <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">💰 적립금 차감 내역</h3>
+      ${myDeductions.length === 0 ? '<div class="empty-hint" style="margin-bottom:22px;">아직 차감 내역이 없어요.</div>' : `
+      <div class="prize-list" style="margin-bottom:22px;">
+        ${myDeductions.map(d => `
+          <div class="imminent-row">
+            <span class="name">${d.amount.toLocaleString()}원 차감
+              <span class="muted" style="margin-left:6px;">${new Date(d.deductedAt).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+            </span>
           </div>
         `).join('')}
       </div>`}
@@ -1663,7 +1697,8 @@
               <td class="num">${v.holeInOnes}</td>
               <td class="num">+${v.pointsEarned.toLocaleString()}원</td>
               <td>
-                ${v.freeVisit ? '<span class="tag">무료쿠폰</span>' : ''}
+                ${v.freeVisit ? '<span class="tag">무료쿠폰(구)</span>' : ''}
+                ${v.couponEarned ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎁쿠폰발급</span>' : ''}
                 ${v.bonusStamp ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲도장+뽑기</span>' : (v.lotteryVisit ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲뽑기</span>' : '')}
                 ${v.discountApplied ? `<span class="tag" style="background:rgba(90,180,120,0.25);">🪙${v.discountApplied.toLocaleString()}원 차감</span>` : ''}
                 <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="editVisitRecord('${v.id}')" title="수정">✏️</button>
@@ -1684,14 +1719,14 @@
       currentCustomerId = customerId;
       visitCounters = { birdie: 0, eagle: 0, hio: 0 };
       const c = getCustomers().find(x => x.id === customerId);
-      const isFreeVisit = c.visitCount >= VISITS_NEEDED_FOR_FREE;
-      const willHitLottery = !isFreeVisit && ((c.cycleVisits || 0) + 1) === VISITS_FOR_LOTTERY;
+      const willHitLottery = ((c.cycleVisits || 0) + 1) === VISITS_FOR_LOTTERY;
+      const willEarnCoupon = (c.visitCount + 1) >= VISITS_NEEDED_FOR_FREE;
       const overlay = document.getElementById('visitModalOverlay');
-      overlay.dataset.free = isFreeVisit ? '1' : '0';
       updateCounterDisplay();
-      document.getElementById('visitModalName').textContent = isFreeVisit
-        ? `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 🎁 무료 게임 방문 (10번째 · 적립 없음)`
-        : `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회${willHitLottery ? ' 🎲 이번 방문은 5번째! 뽑기 찬스' : ''}`;
+      document.getElementById('visitModalName').textContent =
+        `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회` +
+        `${willHitLottery ? ' 🎲 이번 방문은 5번째! 뽑기 찬스' : ''}` +
+        `${willEarnCoupon ? ' 🎁 이번 방문으로 무료쿠폰 발급!' : ''}`;
       overlay.classList.add('show');
     }
     function closeVisitModal() {
@@ -1712,14 +1747,41 @@
       document.getElementById('prizeModalOverlay').classList.remove('show');
     }
 
-    function showDiscountModal(customer, amount, units) {
-      document.getElementById('discountModalName').textContent = `${customer.name || ''} ${customer.nickname ? '· ' + customer.nickname : ''} 님, 적립금이 1,000원 단위를 ${units}회 채웠어요!`;
+    function showDiscountModal(customer, amount) {
+      document.getElementById('discountModalName').textContent = `${customer.name || ''} ${customer.nickname ? '· ' + customer.nickname : ''} 님`;
       document.getElementById('discountModalAmount').textContent = `${amount.toLocaleString()}원`;
-      document.getElementById('discountModalDesc').textContent = `오늘 게임비에서 ${amount.toLocaleString()}원만큼 차감해 주세요.`;
+      document.getElementById('discountModalDesc').textContent = `적립금에서 ${amount.toLocaleString()}원이 차감되었습니다. 오늘 게임비에서 차감해 주세요.`;
       document.getElementById('discountModalOverlay').classList.add('show');
     }
     function closeDiscountModal() {
       document.getElementById('discountModalOverlay').classList.remove('show');
+    }
+
+    // ---------- 적립금 차감(원하는 때 원하는 금액만큼, 전액/일부 모두 가능) ----------
+    function deductPoints(customerId) {
+      const customers = getCustomers();
+      const c = customers.find(x => x.id === customerId);
+      if (!c) return;
+      if (c.totalPoints <= 0) { alert('차감할 적립금이 없어요.'); return; }
+
+      const input = prompt(`현재 적립금: ${c.totalPoints.toLocaleString()}원\n차감할 금액을 입력해주세요. (전액 차감은 ${c.totalPoints})`, String(c.totalPoints));
+      if (input === null) return;
+      const amount = parseInt(String(input).replace(/[^0-9]/g, ''), 10);
+      if (!amount || amount <= 0) { alert('올바른 금액을 입력해주세요.'); return; }
+      if (amount > c.totalPoints) { alert(`보유 적립금(${c.totalPoints.toLocaleString()}원)보다 많이 차감할 수 없어요.`); return; }
+
+      if (!confirm(`${c.name || c.nickname} 님의 적립금에서 ${amount.toLocaleString()}원을 차감할까요?\n(차감 후 잔액: ${(c.totalPoints - amount).toLocaleString()}원)`)) return;
+
+      c.totalPoints -= amount;
+      saveData(LS_KEYS.customers, customers);
+
+      const deductions = getDeductions();
+      deductions.push({ id: uid(), customerId, amount, deductedAt: new Date().toISOString() });
+      saveData(LS_KEYS.deductions, deductions);
+
+      renderCustomerDetail(customerId);
+      renderDashboard();
+      showDiscountModal(c, amount);
     }
     function changeCounter(type, delta) {
       const key = type === 'birdie' ? 'birdie' : type === 'eagle' ? 'eagle' : 'hio';
@@ -1730,9 +1792,8 @@
       document.getElementById('cnt-birdie').textContent = visitCounters.birdie;
       document.getElementById('cnt-eagle').textContent = visitCounters.eagle;
       document.getElementById('cnt-hio').textContent = visitCounters.hio;
-      const isFree = document.getElementById('visitModalOverlay').dataset.free === '1';
       const total = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
-      document.getElementById('pointPreview').textContent = isFree ? '0원 (무료 방문 · 적립 없음)' : total.toLocaleString() + '원';
+      document.getElementById('pointPreview').textContent = total.toLocaleString() + '원';
     }
 
     function saveVisit() {
@@ -1741,35 +1802,30 @@
       if (idx === -1) return;
 
       const c = customers[idx];
-      const isFreeVisit = c.visitCount >= VISITS_NEEDED_FOR_FREE; // 도장 10개 이상이면 이번 방문은 무료
-      const rawPoints = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
-      const points = isFreeVisit ? 0 : rawPoints; // 무료 방문은 버디/이글/홀인원 적립 없음
+      const points = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
 
       let bonusStamp = false;
       let lotteryVisit = false;
       let prizeAmount = null;
+      let couponEarned = false;
 
-      if (isFreeVisit) {
-        c.visitCount += 1; // 곧바로 아래에서 0으로 리셋됨 (방문 이력 표시용 번호만 부여)
-      } else {
-        c.cycleVisits = (c.cycleVisits || 0) + 1;
-        if (c.cycleVisits === VISITS_FOR_LOTTERY) {
-          // 5번째 실방문 -> 뽑기 추첨 1회 (도장 1개 추가 or 할인쿠폰 중 하나, 동일 확률)
-          lotteryVisit = true;
-          const prize = drawPrize();
-          if (prize.type === 'stamp') {
-            bonusStamp = true;
-            c.visitCount += 2;
-          } else {
-            c.visitCount += 1;
-            prizeAmount = prize.amount;
-          }
+      c.cycleVisits = (c.cycleVisits || 0) + 1;
+      if (c.cycleVisits === VISITS_FOR_LOTTERY) {
+        // 5번째 실방문 -> 뽑기 추첨 1회 (도장 1개 추가 or 할인쿠폰 중 하나, 동일 확률)
+        lotteryVisit = true;
+        const prize = drawPrize();
+        if (prize.type === 'stamp') {
+          bonusStamp = true;
+          c.visitCount += 2;
         } else {
           c.visitCount += 1;
+          prizeAmount = prize.amount;
         }
+      } else {
+        c.visitCount += 1;
       }
-      const { newTotal, discount, units } = applyPointsDiscount(c.totalPoints, points);
-      c.totalPoints = newTotal;
+
+      c.totalPoints += points;
 
       const visitId = uid();
       const visits = getVisits();
@@ -1782,26 +1838,30 @@
         holeInOnes: visitCounters.hio,
         pointsEarned: points,
         visitNumberAtTime: c.visitCount,
-        freeVisit: isFreeVisit,
+        couponEarned: false, // 도장이 다 차면 아래에서 true로 갱신
         bonusStamp: bonusStamp,
-        lotteryVisit: lotteryVisit,
-        discountApplied: discount
+        lotteryVisit: lotteryVisit
       });
-      saveData(LS_KEYS.visits, visits);
 
-      if (isFreeVisit) {
-        // 무료 게임 이용 완료 -> 쿠폰 사용 이력 기록 + 사이클 리셋(0부터 새로 시작)
+      if (c.visitCount >= VISITS_NEEDED_FOR_FREE) {
+        // 도장 10개 완성 -> 무료쿠폰 발급(미사용), 원하는 날 "사용 처리"로 소진. 사이클은 바로 새로 시작
+        couponEarned = true;
+        visits[visits.length - 1].couponEarned = true;
         const coupons = getCoupons();
         coupons.push({
           id: uid(),
           customerId: c.id,
-          redeemedAt: new Date().toISOString(),
-          cycleVisitTotal: c.visitCount
+          visitId: visitId,
+          redeemedAt: new Date().toISOString(), // 발급일시 (사용 시점은 usedAt)
+          cycleVisitTotal: c.visitCount,
+          status: 'unused',
+          usedAt: null
         });
         saveData(LS_KEYS.coupons, coupons);
         c.visitCount = 0;
         c.cycleVisits = 0;
       }
+      saveData(LS_KEYS.visits, visits);
 
       if (prizeAmount !== null) {
         const prizes = getPrizes();
@@ -1823,19 +1883,13 @@
       renderCustomerDetail(c.id);
       renderDashboard();
 
-      if (isFreeVisit) {
-        setTimeout(() => alert(`🎁 ${c.name || c.nickname} 님, 무료 게임 이용 완료!\n새로운 방문 사이클이 0회부터 다시 시작됩니다.`), 100);
-      } else if (c.visitCount >= VISITS_NEEDED_FOR_FREE) {
-        setTimeout(() => alert(`🎉 ${c.name || c.nickname} 님, 도장 ${c.visitCount}개 달성!\n다음 방문은 자동으로 무료 게임 처리됩니다.`), 100);
+      if (couponEarned) {
+        setTimeout(() => alert(`🎁 ${c.name || c.nickname} 님, 도장 10개 달성! 무료쿠폰이 발급됐어요.\n고객이 원하는 날 고객 상세 화면에서 "사용 처리"를 눌러주세요. 새로운 방문 사이클이 0회부터 다시 시작됩니다.`), 100);
       }
 
       if (lotteryVisit) {
         const prizeResult = bonusStamp ? { type: 'stamp' } : { type: 'discount', amount: prizeAmount };
-        setTimeout(() => showPrizeResultModal(c, prizeResult), isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 250 : 100);
-      }
-
-      if (discount > 0) {
-        setTimeout(() => showDiscountModal(c, discount, units), 100 + (isFreeVisit || c.visitCount >= VISITS_NEEDED_FOR_FREE ? 150 : 0) + (lotteryVisit ? 150 : 0));
+        setTimeout(() => showPrizeResultModal(c, prizeResult), couponEarned ? 250 : 100);
       }
     }
 
@@ -1852,6 +1906,10 @@
         .sort((a, b) => new Date(a.date) - new Date(b.date));
       const existingCoupons = getCoupons().filter(cp => cp.customerId === customerId);
       const otherCoupons = getCoupons().filter(cp => cp.customerId !== customerId);
+      // 구버전 쿠폰 기록(visitId 없음, "발급=즉시사용" 방식)은 방문 순서대로 위치 매칭한다.
+      const legacyCoupons = existingCoupons.filter(cp => !cp.visitId)
+        .sort((a, b) => new Date(a.redeemedAt) - new Date(b.redeemedAt));
+      let legacyCouponIdx = 0;
       const existingPrizes = getPrizes().filter(p => p.customerId === customerId)
         .sort((a, b) => new Date(a.wonAt) - new Date(b.wonAt));
       const otherPrizes = getPrizes().filter(p => p.customerId !== customerId);
@@ -1859,23 +1917,27 @@
       let runningCount = 0; // 도장 수
       let cycleVisits = 0;  // 현재 사이클의 실방문 횟수
       let totalPoints = c.archivedPoints || 0; // 이력 정리로 삭제된 방문의 적립금 baseline부터 시작
-      let couponIdx = 0;
       const rebuiltCoupons = [];
       const rebuiltPrizes = [];
 
       myVisits.forEach(v => {
-        const isFree = runningCount >= VISITS_NEEDED_FOR_FREE;
+        // 구버전: 도장 10개를 채운 뒤 "그 방문 자체"가 자동으로 무료 처리(적립 0원)되고 즉시 사용완료되던 기록.
+        // 새 로직(적립은 항상 정상 지급 + 무료쿠폰은 발급 후 원하는 때 별도로 "사용 처리")이 적용되기 전 과거 데이터이므로
+        // 그대로 보존한다 (재계산할 때마다 과거 무료방문에 소급으로 적립금이 생기지 않도록).
+        const legacyFreeVisit = v.freeVisit === true;
         const rawPoints = v.birdies * POINT.BIRDIE + v.eagles * POINT.EAGLE + v.holeInOnes * POINT.HOLE_IN_ONE;
-        const points = isFree ? 0 : rawPoints;
+        const points = legacyFreeVisit ? 0 : rawPoints;
         let bonusStamp = false;
         let lotteryVisit = false;
         let discountAmount = null;
+        let couponEarned = false;
         // 이 방문이 이미 이전에 5번째 자리를 차지해 당첨 결과가 확정된 적이 있다면(수정/삭제 이전),
         // 재추첨하지 않고 그 결과를 그대로 유지한다 (기존 도장/할인쿠폰 데이터가 사후에 뒤바뀌지 않도록).
         const reusePrize = existingPrizes.find(p => p.visitId === v.id) || null;
 
-        if (isFree) {
+        if (legacyFreeVisit) {
           runningCount += 1;
+          couponEarned = true;
         } else {
           cycleVisits += 1;
           if (cycleVisits === VISITS_FOR_LOTTERY) {
@@ -1903,17 +1965,16 @@
           } else {
             runningCount += 1;
           }
+          if (runningCount >= VISITS_NEEDED_FOR_FREE) couponEarned = true;
         }
 
-        const { newTotal, discount } = applyPointsDiscount(totalPoints, points);
-        totalPoints = newTotal;
+        totalPoints += points;
 
         v.pointsEarned = points;
         v.visitNumberAtTime = runningCount;
-        v.freeVisit = isFree;
+        v.couponEarned = couponEarned;
         v.bonusStamp = bonusStamp;
         v.lotteryVisit = lotteryVisit;
-        v.discountApplied = discount;
 
         if (lotteryVisit && discountAmount !== null) {
           // 할인쿠폰 당첨: 기존 기록이 있으면 금액/사용여부는 그대로 유지하고 시점만 갱신
@@ -1928,28 +1989,51 @@
           });
         }
 
-        if (isFree) {
-          const reuse = existingCoupons[couponIdx];
+        if (couponEarned) {
+          // 무료쿠폰: 기존 기록이 있으면 id/상태(미사용·사용완료)/사용일은 그대로 유지하고 발급일만 갱신
+          const reuse = legacyFreeVisit
+            ? (legacyCoupons[legacyCouponIdx++] || null)
+            : (existingCoupons.find(cp => cp.visitId === v.id) || null);
           rebuiltCoupons.push({
             id: reuse ? reuse.id : uid(),
             customerId,
-            redeemedAt: v.date,
-            cycleVisitTotal: runningCount
+            visitId: legacyFreeVisit ? null : v.id,
+            redeemedAt: reuse ? reuse.redeemedAt : v.date,
+            cycleVisitTotal: runningCount,
+            status: reuse ? couponStatus(reuse) : 'unused',
+            usedAt: reuse ? (reuse.usedAt || null) : null
           });
-          couponIdx++;
           runningCount = 0;
           cycleVisits = 0;
         }
       });
 
+      // 적립 후 "적립금 차감" 버튼으로 차감된 이력은 방문 기록과 무관하게 그대로 반영해서,
+      // 다른 방문을 수정/삭제해도 이미 차감한 금액이 되살아나지 않게 한다.
+      const totalDeducted = getDeductions().filter(d => d.customerId === customerId)
+        .reduce((sum, d) => sum + d.amount, 0);
+
       c.visitCount = runningCount;
       c.cycleVisits = cycleVisits;
-      c.totalPoints = totalPoints;
+      c.totalPoints = Math.max(0, totalPoints - totalDeducted);
 
       saveData(LS_KEYS.visits, allVisits);
       saveData(LS_KEYS.coupons, otherCoupons.concat(rebuiltCoupons));
       saveData(LS_KEYS.prizes, otherPrizes.concat(rebuiltPrizes));
       saveData(LS_KEYS.customers, customers);
+    }
+
+    function markCouponUsed(couponId) {
+      const coupons = getCoupons();
+      const cp = coupons.find(x => x.id === couponId);
+      if (!cp) return;
+      if (couponStatus(cp) === 'used') return;
+      if (!confirm('무료 게임 쿠폰을 사용 처리할까요?\n(고객이 실제로 그 방문에 무료 게임을 이용한 시점에 눌러주세요)')) return;
+      cp.status = 'used';
+      cp.usedAt = new Date().toISOString();
+      saveData(LS_KEYS.coupons, coupons);
+      if (currentCustomerId) renderCustomerDetail(currentCustomerId);
+      renderDashboard();
     }
 
     function markPrizeUsed(prizeId) {
@@ -2046,15 +2130,20 @@
       document.getElementById('statMonthPrizes').textContent = monthPrizes.length;
       document.getElementById('statTodayVisits').textContent = todayVisits.length;
 
-      // 임박 고객 (8회 이상)
-      const imminent = customers.filter(c => c.visitCount >= VISITS_NEEDED_FOR_FREE - 2)
-        .sort((a, b) => b.visitCount - a.visitCount);
+      // 임박 고객 (8회 이상) + 미사용 무료쿠폰 보유 고객 (사이클과 무관하게 항상 표시)
+      const unusedCouponCustomerIds = new Set(coupons.filter(cp => couponStatus(cp) === 'unused').map(cp => cp.customerId));
+      const imminent = customers.filter(c => c.visitCount >= VISITS_NEEDED_FOR_FREE - 2 || unusedCouponCustomerIds.has(c.id))
+        .sort((a, b) => {
+          const aReady = unusedCouponCustomerIds.has(a.id), bReady = unusedCouponCustomerIds.has(b.id);
+          if (aReady !== bReady) return aReady ? -1 : 1;
+          return b.visitCount - a.visitCount;
+        });
       const imminentList = document.getElementById('imminentList');
       if (imminent.length === 0) {
         imminentList.innerHTML = '<div class="empty-hint">아직 임박한 고객이 없어요.</div>';
       } else {
         imminentList.innerHTML = imminent.map(c => {
-          const ready = c.visitCount >= VISITS_NEEDED_FOR_FREE;
+          const ready = unusedCouponCustomerIds.has(c.id);
           return `
       <div class="imminent-row" onclick="goToCustomer('${c.id}')">
         <span class="name">${escapeHtml(c.name || c.nickname)} ${c.nickname && c.name ? '· ' + escapeHtml(c.nickname) : ''}</span>
@@ -2150,11 +2239,19 @@
       const visits = getVisits();
       const coupons = getCoupons();
       const prizes = getPrizes();
+      const deductions = getDeductions();
 
-      // 고객별 "마지막으로 사이클이 끝난(무료쿠폰 지급) 시점"을 구한다.
+      // 무료쿠폰이 발급된 방문(visitId)별 사용 여부 (미사용 쿠폰의 사이클은 정리 대상에서 제외해야 함)
+      const couponStatusByVisitId = {};
+      coupons.forEach(cp => { if (cp.visitId) couponStatusByVisitId[cp.visitId] = couponStatus(cp); });
+
+      // 고객별 "마지막으로, 무료쿠폰까지 이미 사용 완료된 사이클이 끝난 시점"을 구한다.
+      // (쿠폰이 아직 미사용이면 그 사이클의 방문기록은 정리 대상에서 제외 - 나중에 recalc가 쿠폰 정보를 잃지 않도록)
       const lastResetAt = {};
       visits.forEach(v => {
-        if (!v.freeVisit) return;
+        const legacyUsed = v.freeVisit === true; // 구버전: 발급=즉시사용 방식이었으므로 항상 사용완료
+        const newUsed = v.couponEarned === true && couponStatusByVisitId[v.id] === 'used';
+        if (!legacyUsed && !newUsed) return;
         const t = new Date(v.date).getTime();
         if (!(v.customerId in lastResetAt) || t > lastResetAt[v.customerId]) lastResetAt[v.customerId] = t;
       });
@@ -2162,22 +2259,24 @@
       const oldVisits = visits.filter(v => {
         if (new Date(v.date) >= cutoff) return false;
         const reset = lastResetAt[v.customerId];
-        return reset !== undefined && new Date(v.date).getTime() <= reset; // 이미 끝난 사이클의 기록만
+        return reset !== undefined && new Date(v.date).getTime() <= reset; // 이미 끝난(쿠폰까지 사용된) 사이클의 기록만
       });
       const oldVisitIds = new Set(oldVisits.map(v => v.id));
-      const oldCoupons = coupons.filter(cp => new Date(cp.redeemedAt) < cutoff);
+      const oldCoupons = coupons.filter(cp => couponStatus(cp) === 'used' && new Date(cp.redeemedAt) < cutoff);
       // 할인쿠폰은 당첨 근거가 된 방문기록이 함께 정리될 때만 같이 정리한다.
       // (방문기록은 남아있는데 당첨 이력만 지워지면, 재계산 시 랜덤 재추첨이 일어나 당첨 금액이 바뀔 수 있음)
       const oldPrizes = prizes.filter(p => p.status === 'used' && oldVisitIds.has(p.visitId));
+      // 적립금 차감 이력은 "미사용" 상태가 없는 완결된 기록이므로 기간만 지나면 항상 정리 대상.
+      const oldDeductions = deductions.filter(d => new Date(d.deductedAt) < cutoff);
 
-      if (oldVisits.length === 0 && oldCoupons.length === 0 && oldPrizes.length === 0) {
-        alert(`선택하신 기간(${months}개월)보다 정리 가능한 기록이 없어요. (진행 중인 사이클의 기록은 정리 대상에서 제외돼요)`);
+      if (oldVisits.length === 0 && oldCoupons.length === 0 && oldPrizes.length === 0 && oldDeductions.length === 0) {
+        alert(`선택하신 기간(${months}개월)보다 정리 가능한 기록이 없어요. (진행 중인 사이클과 미사용 쿠폰의 기록은 정리 대상에서 제외돼요)`);
         return;
       }
 
       const ok = confirm(
-        `${months}개월 이상 지난 방문 이력 ${oldVisits.length}건, 쿠폰 사용 이력 ${oldCoupons.length}건, 사용완료 할인쿠폰 ${oldPrizes.length}건을 정리할까요?\n` +
-        `정리 전에 자동으로 백업 파일이 다운로드됩니다. (아직 사용 안 한 할인쿠폰과 진행 중인 사이클의 기록은 정리되지 않아요)\n` +
+        `${months}개월 이상 지난 방문 이력 ${oldVisits.length}건, 사용완료 무료쿠폰 ${oldCoupons.length}건, 사용완료 할인쿠폰 ${oldPrizes.length}건, 적립금 차감 이력 ${oldDeductions.length}건을 정리할까요?\n` +
+        `정리 전에 자동으로 백업 파일이 다운로드됩니다. (아직 사용 안 한 무료쿠폰·할인쿠폰과 진행 중인 사이클의 기록은 정리되지 않아요)\n` +
         `(고객의 누적 방문횟수·적립금·현재 진행 중인 쿠폰 사이클에는 영향이 없습니다)`
       );
       if (!ok) return;
@@ -2188,14 +2287,19 @@
         cutoffDate: cutoff.toISOString(),
         archivedVisits: oldVisits,
         archivedCoupons: oldCoupons,
-        archivedPrizes: oldPrizes
+        archivedPrizes: oldPrizes,
+        archivedDeductions: oldDeductions
       };
       downloadJson(`golfpark-shinseol24-archive-${new Date().toISOString().slice(0, 10)}.json`, backupPayload);
 
-      // 정리되는 방문의 적립금은 고객별 baseline(archivedPoints)에 누적해서 누적 적립금이 줄어들지 않게 한다.
+      // 정리되는 방문의 적립금(+)과 차감 이력(-)을 고객별 baseline(archivedPoints)에 순증감으로 반영해서
+      // 누적 적립금 잔액이 정리 전후로 절대 달라지지 않게 한다.
       const archivedPointsByCustomer = {};
       oldVisits.forEach(v => {
         archivedPointsByCustomer[v.customerId] = (archivedPointsByCustomer[v.customerId] || 0) + (v.pointsEarned || 0);
+      });
+      oldDeductions.forEach(d => {
+        archivedPointsByCustomer[d.customerId] = (archivedPointsByCustomer[d.customerId] || 0) - d.amount;
       });
       customers.forEach(c => {
         if (archivedPointsByCustomer[c.id]) {
@@ -2205,14 +2309,16 @@
 
       // 오래된 기록만 제거 (고객 정보는 archivedPoints 갱신 외에는 건드리지 않음)
       const remainingVisits = visits.filter(v => !oldVisitIds.has(v.id));
-      const remainingCoupons = coupons.filter(cp => new Date(cp.redeemedAt) >= cutoff);
+      const remainingCoupons = coupons.filter(cp => !(couponStatus(cp) === 'used' && new Date(cp.redeemedAt) < cutoff));
       const remainingPrizes = prizes.filter(p => !(p.status === 'used' && oldVisitIds.has(p.visitId)));
+      const remainingDeductions = deductions.filter(d => new Date(d.deductedAt) >= cutoff);
       saveData(LS_KEYS.customers, customers);
       saveData(LS_KEYS.visits, remainingVisits);
       saveData(LS_KEYS.coupons, remainingCoupons);
       saveData(LS_KEYS.prizes, remainingPrizes);
+      saveData(LS_KEYS.deductions, remainingDeductions);
 
-      alert(`정리 완료! 방문 이력 ${oldVisits.length}건, 쿠폰 이력 ${oldCoupons.length}건, 할인쿠폰 이력 ${oldPrizes.length}건이 백업 후 삭제되었습니다.`);
+      alert(`정리 완료! 방문 이력 ${oldVisits.length}건, 쿠폰 이력 ${oldCoupons.length}건, 할인쿠폰 이력 ${oldPrizes.length}건, 적립금 차감 이력 ${oldDeductions.length}건이 백업 후 삭제되었습니다.`);
       renderDataView();
       renderDashboard();
       if (currentCustomerId) renderCustomerDetail(currentCustomerId);
@@ -2288,6 +2394,10 @@
       prizes.forEach(p => { if (p.customerId === mergeId) p.customerId = keepId; });
       saveData(LS_KEYS.prizes, prizes);
 
+      const deductions = getDeductions();
+      deductions.forEach(d => { if (d.customerId === mergeId) d.customerId = keepId; });
+      saveData(LS_KEYS.deductions, deductions);
+
       keep.archivedPoints = (keep.archivedPoints || 0) + (other.archivedPoints || 0);
       saveData(LS_KEYS.customers, customers.filter(c => c.id !== mergeId));
 
@@ -2316,10 +2426,12 @@
       let visits = getVisits().filter(v => v.customerId !== id);
       let coupons = getCoupons().filter(cp => cp.customerId !== id);
       let prizes = getPrizes().filter(p => p.customerId !== id);
+      let deductions = getDeductions().filter(d => d.customerId !== id);
       saveData(LS_KEYS.customers, customers);
       saveData(LS_KEYS.visits, visits);
       saveData(LS_KEYS.coupons, coupons);
       saveData(LS_KEYS.prizes, prizes);
+      saveData(LS_KEYS.deductions, deductions);
       renderDataView();
     }
 
@@ -2327,6 +2439,7 @@
     function exportData(silent) {
       const payload = {
         customers: getCustomers(), visits: getVisits(), coupons: getCoupons(), prizes: getPrizes(),
+        deductions: getDeductions(),
         lockPasswordHash: localStorage.getItem(LOCK_HASH_STORAGE_KEY) || null,
         exportedAt: new Date().toISOString()
       };
@@ -2386,6 +2499,7 @@
           // 덮어쓰기 전 현재 데이터를 안전 백업으로 자동 다운로드 (가져오기가 잘못됐을 때 되돌리기 위함)
           downloadJson(`golfpark-shinseol24-before-import-${new Date().toISOString().slice(0, 10)}.json`, {
             customers: getCustomers(), visits: getVisits(), coupons: getCoupons(), prizes: getPrizes(),
+            deductions: getDeductions(),
             lockPasswordHash: localStorage.getItem(LOCK_HASH_STORAGE_KEY) || null,
             exportedAt: new Date().toISOString()
           });
@@ -2394,7 +2508,9 @@
           saveData(LS_KEYS.visits, data.visits);
           saveData(LS_KEYS.coupons, data.coupons);
           saveData(LS_KEYS.prizes, data.prizes);
+          saveData(LS_KEYS.deductions, Array.isArray(data.deductions) ? data.deductions : []); // 이 기능 이전 백업 파일은 deductions가 없을 수 있음
           if (data.lockPasswordHash) localStorage.setItem(LOCK_HASH_STORAGE_KEY, data.lockPasswordHash);
+          migrateStuckFreeCoupons();
           alert('가져오기 완료! (덮어쓰기 전 데이터는 방금 안전 백업 파일로 다운로드됐어요)');
           renderDataView(); renderDashboard();
         } catch (err) {
@@ -2405,11 +2521,21 @@
       event.target.value = '';
     }
 
+    // ---------- 마이그레이션: 자동 무료방문 방식 -> 무료쿠폰 발급 방식 ----------
+    // 이번 업데이트 전에 이미 도장 10개를 채우고 다음 방문(자동 무료 처리)을 기다리던 중이던 고객이 있다면,
+    // 그 고객들에게 무료쿠폰을 소급 발급하고 사이클을 새로 시작한다 (recalcCustomerFromVisits가
+    // 방문 이력을 처음부터 다시 replay하면서 도장 10개를 채운 그 방문에 자동으로 쿠폰을 매칭/발급해준다).
+    function migrateStuckFreeCoupons() {
+      const stuck = getCustomers().filter(c => c.visitCount >= VISITS_NEEDED_FOR_FREE);
+      stuck.forEach(c => recalcCustomerFromVisits(c.id));
+    }
+
     // ---------- 초기 실행 ----------
     // 브라우저가 저장공간 부족 시 이 사이트 데이터를 자동으로 지우지 않도록 영구 저장을 요청 (지원 브라우저에 한함, 실패해도 무시)
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => { });
     }
+    migrateStuckFreeCoupons();
     renderDashboard();
   </script>
 </body>
