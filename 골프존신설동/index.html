@@ -1606,6 +1606,8 @@
       const myPrizes = getPrizes().filter(p => p.customerId === id).sort((a, b) => new Date(b.wonAt) - new Date(a.wonAt));
       const unusedPrizes = myPrizes.filter(p => p.status === 'unused');
       const unusedPrizeTotal = unusedPrizes.reduce((sum, p) => sum + p.amount, 0);
+      const usedPrizes = myPrizes.filter(p => p.status === 'used');
+      const usedPrizeTotal = usedPrizes.reduce((sum, p) => sum + p.amount, 0);
 
       // 적립금 차감 내역
       const myDeductions = getDeductions().filter(d => d.customerId === id).sort((a, b) => new Date(b.deductedAt) - new Date(a.deductedAt));
@@ -1660,16 +1662,18 @@
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎰 뽑기 할인쿠폰</h3>
       ${myPrizes.length === 0 ? '<div class="empty-hint">아직 할인쿠폰 당첨 이력이 없어요. (5번째 방문마다 뽑기 — 도장 1개 추가로 당첨될 수도 있어요)</div>' : `
       <div class="prize-list" style="margin-bottom:22px;">
-        ${myPrizes.map(p => `
+        ${unusedPrizes.map(p => `
           <div class="imminent-row">
             <span class="name">${p.amount.toLocaleString()}원 할인 쿠폰
-              <span class="muted" style="margin-left:6px;">당첨일 ${new Date(p.wonAt).toLocaleDateString('ko-KR')}${p.status === 'used' ? ' · 사용일 ' + new Date(p.usedAt).toLocaleDateString('ko-KR') : ''}</span>
+              <span class="muted" style="margin-left:6px;">당첨일 ${new Date(p.wonAt).toLocaleDateString('ko-KR')}</span>
             </span>
-            ${p.status === 'unused'
-        ? `<button class="btn btn-gold" style="padding:6px 12px;font-size:12px;" onclick="markPrizeUsed('${p.id}')">사용 처리</button>`
-        : `<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--text-muted);">사용완료</span>`}
+            <button class="btn btn-gold" style="padding:6px 12px;font-size:12px;" onclick="markPrizeUsed('${p.id}')">사용 처리</button>
           </div>
         `).join('')}
+        ${usedPrizes.length > 0 ? `
+        <div class="imminent-row">
+          <span class="name muted">사용완료 ${usedPrizes.length}장 · 누적 ${usedPrizeTotal.toLocaleString()}원</span>
+        </div>` : ''}
       </div>`}
 
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">💰 적립금 차감 내역</h3>
