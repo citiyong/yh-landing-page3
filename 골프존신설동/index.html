@@ -1262,6 +1262,8 @@
 
         <div style="margin-top:20px;border-top:1px solid var(--divider);padding-top:16px;">
           <p class="muted" style="margin-bottom:10px;">전체 고객 목록 (수정 / 삭제)</p>
+          <input type="text" id="allCustomerSearch" placeholder="이름 또는 닉네임으로 찾기..."
+            autocomplete="off" style="margin-bottom:12px;" oninput="renderDataView()">
           <div id="allCustomerList"></div>
         </div>
       </div>
@@ -2361,10 +2363,19 @@
     // ---------- 데이터 관리 화면 ----------
     function renderDataView() {
       renderStorageUsage();
-      const customers = getCustomers();
+      const allCustomers = getCustomers();
       const el = document.getElementById('allCustomerList');
-      if (customers.length === 0) {
+      if (allCustomers.length === 0) {
         el.innerHTML = '<div class="empty-hint">등록된 고객이 없어요.</div>';
+        return;
+      }
+      const q = (document.getElementById('allCustomerSearch').value || '').trim().toLowerCase();
+      const customers = q ? allCustomers.filter(c =>
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.nickname && c.nickname.toLowerCase().includes(q))
+      ) : allCustomers;
+      if (customers.length === 0) {
+        el.innerHTML = '<div class="empty-hint">일치하는 고객이 없어요.</div>';
         return;
       }
       el.innerHTML = customers.map(c => `
