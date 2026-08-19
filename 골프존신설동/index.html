@@ -1196,6 +1196,12 @@
             <label>전화번호 (선택)</label>
             <input type="text" id="regPhone" placeholder="010-0000-0000">
           </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label style="display:flex;flex-direction:row;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="regIsStudent" style="width:16px;height:16px;padding:0;background:none;border:1px solid var(--divider);flex:none;">
+              🎓 학생 (도장 서비스 없이 적립금만 적용)
+            </label>
+          </div>
         </div>
         <p class="muted">실명과 닉네임 중 최소 하나는 입력해주세요.</p>
         <button class="btn btn-primary btn-block" onclick="registerCustomer()">고객 등록하기</button>
@@ -1504,6 +1510,7 @@
       const name = document.getElementById('regName').value.trim();
       const nickname = document.getElementById('regNickname').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
+      const isStudent = document.getElementById('regIsStudent').checked;
       const feedback = document.getElementById('regFeedback');
 
       if (!name && !nickname) {
@@ -1525,16 +1532,18 @@
         registeredAt: new Date().toISOString(),
         visitCount: 0,
         cycleVisits: 0,
-        totalPoints: 0
+        totalPoints: 0,
+        isStudent
       };
       customers.push(newCustomer);
       saveData(LS_KEYS.customers, customers);
 
-      feedback.textContent = `✅ ${name || nickname} 님 등록 완료!`;
+      feedback.textContent = `✅ ${name || nickname} 님 등록 완료!${isStudent ? ' (🎓 학생)' : ''}`;
       feedback.style.color = 'var(--turf)';
       document.getElementById('regName').value = '';
       document.getElementById('regNickname').value = '';
       document.getElementById('regPhone').value = '';
+      document.getElementById('regIsStudent').checked = false;
     }
 
     // ---------- 검색 ----------
@@ -1551,8 +1560,8 @@
       }
       searchResults.innerHTML = currentMatches.map((c, i) => `
       <div class="search-result-item${i === highlightedIndex ? ' active' : ''}" onclick="selectCustomer('${c.id}')">
-        <span class="r-name">${escapeHtml(c.name || '')} ${c.nickname ? '<span style=\"color:var(--turf)\">· ' + escapeHtml(c.nickname) + '</span>' : ''}</span>
-        <span class="r-meta">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회</span>
+        <span class="r-name">${escapeHtml(c.name || '')} ${c.nickname ? '<span style=\"color:var(--turf)\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${studentBadge(c)}</span>
+        <span class="r-meta">${c.isStudent ? '적립금만 적용' : c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회'}</span>
       </div>
     `).join('');
     }
@@ -1608,6 +1617,11 @@
       return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
     }
 
+    // 학생 고객(도장 서비스 없이 적립금만 적용)임을 나타내는 배지. 이름 옆에 공통으로 붙여 스태프가 한눈에 구분하게 함.
+    function studentBadge(c) {
+      return c.isStudent ? ' <span class="badge" style="background:rgba(90,150,220,0.2);color:#7fb3ff;">🎓학생</span>' : '';
+    }
+
     // ---------- 고객 상세 렌더 ----------
     function renderCustomerDetail(id) {
       const customers = getCustomers();
@@ -1622,6 +1636,7 @@
       const unusedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'unused');
       const usedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'used');
       const isReady = unusedCoupons.length > 0;
+      const isStudentCustomer = !!c.isStudent;
 
       // 야간 조명 스탬프판 (10개 lamp + 1개 free lamp)
       // 5번째 실방문은 뽑기 체크포인트: 뽑기 결과가 "도장 1개 추가"이면 5·6번 lamp가 한번에 채워짐
@@ -1644,11 +1659,16 @@
       // 적립금 차감 내역
       const myDeductions = getDeductions().filter(d => d.customerId === id).sort((a, b) => new Date(b.deductedAt) - new Date(a.deductedAt));
 
+      // 학생 고객은 도장/뽑기 서비스 대상이 아니므로, 전환 전에 이미 받아둔 미사용/사용 이력이 있을 때만
+      // 무료쿠폰·뽑기 할인쿠폰 섹션을 보여준다(있는 혜택은 계속 쓸 수 있어야 하므로).
+      const showCouponSection = !isStudentCustomer || myCoupons.length > 0;
+      const showPrizeSection = !isStudentCustomer || myPrizes.length > 0;
+
       container.innerHTML = `
     <div class="card">
       <div class="customer-header">
         <div>
-          <div class="customer-name">${escapeHtml(c.name || '(이름 없음)')}${c.nickname ? '<span class=\"nickname\">· ' + escapeHtml(c.nickname) + '</span>' : ''}</div>
+          <div class="customer-name">${escapeHtml(c.name || '(이름 없음)')}${c.nickname ? '<span class=\"nickname\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${studentBadge(c)}</div>
           <div class="customer-sub">${c.phone ? '📞 ' + escapeHtml(c.phone) + ' · ' : ''}등록일 ${new Date(c.registeredAt).toLocaleDateString('ko-KR')}</div>
         </div>
         <button class="btn btn-primary" onclick="openVisitModal('${c.id}')">＋ 오늘 방문 등록</button>
@@ -1660,22 +1680,27 @@
         </div>
       </div>
 
+      ${isStudentCustomer ? `
+      <div class="light-track-wrap">
+        <div class="track-caption">🎓 학생 고객 — 도장 서비스 없이 적립금만 적용됩니다.</div>
+      </div>` : `
       <div class="light-track-wrap">
         <div class="light-track">${lamps}</div>
         <div class="track-caption">${isReady ? '무료쿠폰을 원하는 날 사용해주세요 🎁' : `${VISITS_NEEDED_FOR_FREE - c.visitCount}개 도장 더 채우면 무료 게임 쿠폰 발급! (5번째 실방문은 뽑기 찬스)`}</div>
-      </div>
+      </div>`}
 
       <div class="stat-row">
-        <div class="mini-stat"><div class="v">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}</div><div class="l">현재 사이클 도장 수</div></div>
+        ${isStudentCustomer ? '' : `<div class="mini-stat"><div class="v">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}</div><div class="l">현재 사이클 도장 수</div></div>`}
         <div class="mini-stat">
           <div class="v" style="color:var(--turf)">${c.totalPoints.toLocaleString()}원</div>
           <div class="l">누적 적립금</div>
           ${c.totalPoints > 0 ? `<button class="btn btn-secondary" style="margin-top:6px;padding:4px 10px;font-size:11px;" onclick="deductPoints('${c.id}')">💰 적립금 차감</button>` : ''}
         </div>
-        <div class="mini-stat"><div class="v" style="color:var(--gold)">${usedCoupons.length}회</div><div class="l">누적 무료쿠폰 사용</div></div>
-        <div class="mini-stat"><div class="v" style="color:var(--gold)">${unusedPrizes.length}장 (${unusedPrizeTotal.toLocaleString()}원)</div><div class="l">보유 중인 할인쿠폰</div></div>
+        ${showCouponSection ? `<div class="mini-stat"><div class="v" style="color:var(--gold)">${usedCoupons.length}회</div><div class="l">누적 무료쿠폰 사용</div></div>` : ''}
+        ${showPrizeSection ? `<div class="mini-stat"><div class="v" style="color:var(--gold)">${unusedPrizes.length}장 (${unusedPrizeTotal.toLocaleString()}원)</div><div class="l">보유 중인 할인쿠폰</div></div>` : ''}
       </div>
 
+      ${!showCouponSection ? '' : `
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎟 보유 무료쿠폰</h3>
       ${myCoupons.length === 0 ? '<div class="empty-hint">아직 발급된 무료쿠폰이 없어요. (도장 10개를 채우면 자동 발급돼요)</div>' : `
       <div class="prize-list" style="margin-bottom:22px;">
@@ -1689,8 +1714,9 @@
         : `<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--text-muted);">사용완료</span>`}
           </div>
         `).join('')}
-      </div>`}
+      </div>`}`}
 
+      ${!showPrizeSection ? '' : `
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎰 뽑기 할인쿠폰</h3>
       ${myPrizes.length === 0 ? '<div class="empty-hint">아직 할인쿠폰 당첨 이력이 없어요. (5번째 방문마다 뽑기 — 도장 1개 추가로 당첨될 수도 있어요)</div>' : `
       <div class="prize-list" style="margin-bottom:22px;">
@@ -1706,7 +1732,7 @@
         <div class="imminent-row">
           <span class="name muted">사용완료 ${usedPrizes.length}장 · 누적 ${usedPrizeTotal.toLocaleString()}원</span>
         </div>` : ''}
-      </div>`}
+      </div>`}`}
 
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">💰 적립금 차감 내역</h3>
       ${myDeductions.length === 0 ? '<div class="empty-hint" style="margin-bottom:22px;">아직 차감 내역이 없어요.</div>' : `
@@ -1755,14 +1781,19 @@
       currentCustomerId = customerId;
       visitCounters = { birdie: 0, eagle: 0, hio: 0 };
       const c = getCustomers().find(x => x.id === customerId);
-      const willHitLottery = ((c.cycleVisits || 0) + 1) === VISITS_FOR_LOTTERY;
-      const willEarnCoupon = (c.visitCount + 1) >= VISITS_NEEDED_FOR_FREE;
       const overlay = document.getElementById('visitModalOverlay');
       updateCounterDisplay();
-      document.getElementById('visitModalName').textContent =
-        `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회` +
-        `${willHitLottery ? ' 🎲 이번 방문은 5번째! 뽑기 찬스' : ''}` +
-        `${willEarnCoupon ? ' 🎁 이번 방문으로 무료쿠폰 발급!' : ''}`;
+      if (c.isStudent) {
+        document.getElementById('visitModalName').textContent =
+          `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 🎓 학생 · 현재 적립금 ${c.totalPoints.toLocaleString()}원`;
+      } else {
+        const willHitLottery = ((c.cycleVisits || 0) + 1) === VISITS_FOR_LOTTERY;
+        const willEarnCoupon = (c.visitCount + 1) >= VISITS_NEEDED_FOR_FREE;
+        document.getElementById('visitModalName').textContent =
+          `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 현재 ${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회` +
+          `${willHitLottery ? ' 🎲 이번 방문은 5번째! 뽑기 찬스' : ''}` +
+          `${willEarnCoupon ? ' 🎁 이번 방문으로 무료쿠폰 발급!' : ''}`;
+      }
       overlay.classList.add('show');
     }
     function closeVisitModal() {
@@ -1839,26 +1870,31 @@
 
       const c = customers[idx];
       const points = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
+      const isStudentVisit = !!c.isStudent; // 이 방문 시점의 상태를 스냅샷으로 기록 (나중에 학생↔일반 전환해도 과거 방문의 도장/뽑기 적용 여부가 바뀌지 않도록)
 
       let bonusStamp = false;
       let lotteryVisit = false;
       let prizeAmount = null;
       let couponEarned = false;
 
-      c.cycleVisits = (c.cycleVisits || 0) + 1;
-      if (c.cycleVisits === VISITS_FOR_LOTTERY) {
-        // 5번째 실방문 -> 뽑기 추첨 1회 (도장 1개 추가 or 할인쿠폰 중 하나, 동일 확률)
-        lotteryVisit = true;
-        const prize = drawPrize();
-        if (prize.type === 'stamp') {
-          bonusStamp = true;
-          c.visitCount += 2;
+      if (isStudentVisit) {
+        // 학생 고객: 도장/뽑기/무료쿠폰 서비스 없이 적립금만 적립
+      } else {
+        c.cycleVisits = (c.cycleVisits || 0) + 1;
+        if (c.cycleVisits === VISITS_FOR_LOTTERY) {
+          // 5번째 실방문 -> 뽑기 추첨 1회 (도장 1개 추가 or 할인쿠폰 중 하나, 동일 확률)
+          lotteryVisit = true;
+          const prize = drawPrize();
+          if (prize.type === 'stamp') {
+            bonusStamp = true;
+            c.visitCount += 2;
+          } else {
+            c.visitCount += 1;
+            prizeAmount = prize.amount;
+          }
         } else {
           c.visitCount += 1;
-          prizeAmount = prize.amount;
         }
-      } else {
-        c.visitCount += 1;
       }
 
       c.totalPoints += points;
@@ -1876,10 +1912,11 @@
         visitNumberAtTime: c.visitCount,
         couponEarned: false, // 도장이 다 차면 아래에서 true로 갱신
         bonusStamp: bonusStamp,
-        lotteryVisit: lotteryVisit
+        lotteryVisit: lotteryVisit,
+        studentVisit: isStudentVisit
       });
 
-      if (c.visitCount >= VISITS_NEEDED_FOR_FREE) {
+      if (!isStudentVisit && c.visitCount >= VISITS_NEEDED_FOR_FREE) {
         // 도장 10개 완성 -> 무료쿠폰 발급(미사용), 원하는 날 "사용 처리"로 소진. 사이클은 바로 새로 시작
         couponEarned = true;
         visits[visits.length - 1].couponEarned = true;
@@ -1963,6 +2000,20 @@
         const legacyFreeVisit = v.freeVisit === true;
         const rawPoints = v.birdies * POINT.BIRDIE + v.eagles * POINT.EAGLE + v.holeInOnes * POINT.HOLE_IN_ONE;
         const points = legacyFreeVisit ? 0 : rawPoints;
+
+        // 학생 방문(그 방문 당시 학생 상태였던 스냅샷)은 도장/뽑기/쿠폰 로직을 전부 건너뛰고 적립금만 반영한다.
+        // 현재 고객의 학생 여부가 아니라 방문 당시 기록된 studentVisit 값을 기준으로 판단하므로,
+        // 이후 학생↔일반 전환을 반복해도 과거 방문의 도장 진행/사이클(runningCount, cycleVisits)이 뒤바뀌지 않는다.
+        if (v.studentVisit) {
+          totalPoints += points;
+          v.pointsEarned = points;
+          v.visitNumberAtTime = runningCount;
+          v.couponEarned = false;
+          v.bonusStamp = false;
+          v.lotteryVisit = false;
+          return;
+        }
+
         let bonusStamp = false;
         let lotteryVisit = false;
         let discountAmount = null;
@@ -2167,8 +2218,10 @@
       document.getElementById('statTodayVisits').textContent = todayVisits.length;
 
       // 임박 고객 (8회 이상) + 미사용 무료쿠폰 보유 고객 (사이클과 무관하게 항상 표시)
+      // 학생 고객은 도장이 더 늘지 않아 근접(near) 조건으로는 절대 뜨지 않게 제외하되,
+      // 학생 전환 전에 받아둔 미사용 쿠폰이 남아있다면 계속 노출한다.
       const unusedCouponCustomerIds = new Set(coupons.filter(cp => couponStatus(cp) === 'unused').map(cp => cp.customerId));
-      const imminent = customers.filter(c => c.visitCount >= VISITS_NEEDED_FOR_FREE - 2 || unusedCouponCustomerIds.has(c.id))
+      const imminent = customers.filter(c => (!c.isStudent && c.visitCount >= VISITS_NEEDED_FOR_FREE - 2) || unusedCouponCustomerIds.has(c.id))
         .sort((a, b) => {
           const aReady = unusedCouponCustomerIds.has(a.id), bReady = unusedCouponCustomerIds.has(b.id);
           if (aReady !== bReady) return aReady ? -1 : 1;
@@ -2182,7 +2235,7 @@
           const ready = unusedCouponCustomerIds.has(c.id);
           return `
       <div class="imminent-row" onclick="goToCustomer('${c.id}')">
-        <span class="name">${escapeHtml(c.name || c.nickname)} ${c.nickname && c.name ? '· ' + escapeHtml(c.nickname) : ''}</span>
+        <span class="name">${escapeHtml(c.name || c.nickname)} ${c.nickname && c.name ? '· ' + escapeHtml(c.nickname) : ''}${studentBadge(c)}</span>
         <span class="badge ${ready ? 'ready' : 'near'}">${ready ? '🎁 쿠폰 사용가능' : (c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회')}</span>
       </div>`;
         }).join('');
@@ -2195,7 +2248,7 @@
       } else {
         todayListEl.innerHTML = todayVisits.slice().reverse().map(v => {
           const c = customers.find(x => x.id === v.customerId);
-          return `<div class="imminent-row"><span class="name">${escapeHtml(c ? (c.name || c.nickname) : '(삭제된 고객)')}</span>
+          return `<div class="imminent-row"><span class="name">${escapeHtml(c ? (c.name || c.nickname) : '(삭제된 고객)')}${c ? studentBadge(c) : ''}</span>
         <span class="muted">버디${v.birdies} · 이글${v.eagles} · 홀인원${v.holeInOnes} · <b style="color:var(--turf)">+${v.pointsEarned.toLocaleString()}원</b>${v.discountApplied ? ` · <b style="color:var(--gold)">🪙${v.discountApplied.toLocaleString()}원 차감</b>` : ''}</span></div>`;
         }).join('');
       }
@@ -2380,14 +2433,35 @@
       }
       el.innerHTML = customers.map(c => `
     <div class="imminent-row">
-      <span class="name">${escapeHtml(c.name || '')} ${c.nickname ? '· ' + escapeHtml(c.nickname) : ''} <span class="muted">(${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회)</span></span>
+      <span class="name">${escapeHtml(c.name || '')} ${c.nickname ? '· ' + escapeHtml(c.nickname) : ''} <span class="muted">(${c.isStudent ? '적립금만 적용' : c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회'})</span>${studentBadge(c)}</span>
       <span>
         <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="editCustomer('${c.id}')">수정</button>
+        <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="toggleStudentStatus('${c.id}')" title="학생 여부 전환">${c.isStudent ? '🎓 일반 전환' : '🎓 학생 전환'}</button>
         <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="mergeCustomerPrompt('${c.id}')" title="중복 등록된 고객을 이 고객으로 합치기">🔗 병합</button>
         <button class="btn btn-danger" style="padding:6px 12px;font-size:12px;" onclick="deleteCustomer('${c.id}')">삭제</button>
       </span>
     </div>
   `).join('');
+    }
+
+    // ---------- 학생 ↔ 일반 전환 ----------
+    // isStudent 플래그만 바꾼다. 기존 도장 진행/미사용 쿠폰 등은 그대로 보존되며(방문 기록마다
+    // studentVisit 스냅샷이 남아있어 과거 이력이 재계산 때 뒤바뀌지 않음), 전환 시점 이후의
+    // 새 방문부터 바뀐 상태가 적용된다.
+    function toggleStudentStatus(id) {
+      const customers = getCustomers();
+      const c = customers.find(x => x.id === id);
+      if (!c) return;
+      const label = `${c.name || ''}${c.nickname ? ' · ' + c.nickname : ''}`.trim();
+      const next = !c.isStudent;
+      const msg = next
+        ? `"${label}" 님을 🎓 학생으로 전환할까요?\n지금부터 새 방문은 도장/뽑기 없이 적립금만 적립됩니다. 기존에 모은 도장·쿠폰은 그대로 보존되며, 다시 일반으로 전환하면 그대로 이어서 사용할 수 있어요.`
+        : `"${label}" 님을 일반 고객으로 전환할까요?\n지금부터 새 방문부터 도장·뽑기 서비스가 다시 적용됩니다.`;
+      if (!confirm(msg)) return;
+      c.isStudent = next;
+      saveData(LS_KEYS.customers, customers);
+      renderDataView();
+      if (currentCustomerId === id) renderCustomerDetail(id);
     }
 
     // ---------- 중복 고객 병합 ----------
