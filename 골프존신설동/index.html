@@ -1197,10 +1197,16 @@
             <input type="text" id="regPhone" placeholder="010-0000-0000">
           </div>
           <div class="field" style="grid-column:1/-1;">
-            <label style="display:flex;flex-direction:row;align-items:center;gap:8px;cursor:pointer;">
-              <input type="checkbox" id="regIsStudent" style="width:16px;height:16px;padding:0;background:none;border:1px solid var(--divider);flex:none;">
-              🎓 학생 (도장 서비스 없이 적립금만 적용)
-            </label>
+            <label>고객 유형</label>
+            <select id="regCustomerType" onchange="onRegCustomerTypeChange()">
+              <option value="regular">일반</option>
+              <option value="student">🎓 학생 (도장 서비스 없이 적립금만 적용)</option>
+              <option value="prepaid">🎫 선불 (도장·적립금 없이 선불 횟수만 차감)</option>
+            </select>
+          </div>
+          <div class="field" id="regPrepaidCountWrap" style="grid-column:1/-1;display:none;">
+            <label>선불 횟수</label>
+            <input type="number" id="regPrepaidCount" min="1" placeholder="예: 10">
           </div>
         </div>
         <p class="muted">실명과 닉네임 중 최소 하나는 입력해주세요.</p>
@@ -1369,7 +1375,7 @@
       { type: 'discount', amount: 3000, weight: 15 }
     ]; // 뽑기 상품 - 가중치 합 100 (도장10% / 1000원55% / 2000원20% / 3000원15%)
 
-    const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs', deductions: 'golfPointDeductionLogs' };
+    const LS_KEYS = { customers: 'golfCustomers', visits: 'golfVisitLogs', coupons: 'golfCouponLogs', prizes: 'golfPrizeLogs', deductions: 'golfPointDeductionLogs', prepaidCharges: 'golfPrepaidChargeLogs' };
 
     // ---------- 화면 잠금 ----------
     const DEFAULT_LOCK_PASSWORD_HASH = 'f398d545c2ebfa0077b6d925e9d396cebf2c0a982700605fcf96b14731f88d58';
@@ -1463,7 +1469,23 @@
     function getCoupons() { return loadData(LS_KEYS.coupons); }
     function getPrizes() { return loadData(LS_KEYS.prizes); }
     function getDeductions() { return loadData(LS_KEYS.deductions); }
+    function getPrepaidCharges() { return loadData(LS_KEYS.prepaidCharges); }
     function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+    function customerType(c) { return c.customerType || 'regular'; }
+    // 검색결과/전체 고객 목록 등에서 이름 옆에 붙는 짧은 상태 텍스트(유형별로 의미가 다름).
+    function customerMetaLabel(c) {
+      const type = customerType(c);
+      if (type === 'student') return '적립금만 적용';
+      if (type === 'prepaid') return `선불 ${c.prepaidRemaining || 0}회 남음`;
+      return `${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회`;
+    }
+    // 선불 잔여횟수는 "충전 총합 - 선불 유형으로 기록된 방문 수"로 항상 다시 계산 가능하게 유지한다
+    // (적립금/도장과 동일한 철학: 방문을 수정/삭제해도 recalcCustomerFromVisits가 정확한 값으로 재조정).
+    function recomputePrepaidRemaining(customer) {
+      const totalCharged = getPrepaidCharges().filter(p => p.customerId === customer.id).reduce((s, p) => s + p.amount, 0);
+      const consumed = getVisits().filter(v => v.customerId === customer.id && v.visitCustomerType === 'prepaid').length;
+      customer.prepaidRemaining = Math.max(0, totalCharged - consumed);
+    }
     // 구버전 쿠폰 기록(status 필드 없음)은 발급 = 즉시사용 방식이었으므로 항상 사용완료로 간주한다.
     function couponStatus(cp) { return cp.status || 'used'; }
     function drawPrize() {
@@ -1506,11 +1528,16 @@
     setInterval(tickClock, 1000); tickClock();
 
     // ---------- 신규 고객 등록 ----------
+    function onRegCustomerTypeChange() {
+      const type = document.getElementById('regCustomerType').value;
+      document.getElementById('regPrepaidCountWrap').style.display = type === 'prepaid' ? '' : 'none';
+    }
+
     function registerCustomer() {
       const name = document.getElementById('regName').value.trim();
       const nickname = document.getElementById('regNickname').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
-      const isStudent = document.getElementById('regIsStudent').checked;
+      const type = document.getElementById('regCustomerType').value;
       const feedback = document.getElementById('regFeedback');
 
       if (!name && !nickname) {
@@ -1533,17 +1560,33 @@
         visitCount: 0,
         cycleVisits: 0,
         totalPoints: 0,
-        isStudent
+        customerType: type,
+        prepaidRemaining: 0
       };
       customers.push(newCustomer);
+
+      let typeLabel = '';
+      if (type === 'student') typeLabel = ' (🎓 학생)';
+      if (type === 'prepaid') {
+        const initialCount = parseInt(document.getElementById('regPrepaidCount').value, 10);
+        if (initialCount > 0) {
+          const charges = getPrepaidCharges();
+          charges.push({ id: uid(), customerId: newCustomer.id, amount: initialCount, chargedAt: new Date().toISOString() });
+          saveData(LS_KEYS.prepaidCharges, charges);
+          newCustomer.prepaidRemaining = initialCount;
+        }
+        typeLabel = ` (🎫 선불 ${newCustomer.prepaidRemaining}회)`;
+      }
       saveData(LS_KEYS.customers, customers);
 
-      feedback.textContent = `✅ ${name || nickname} 님 등록 완료!${isStudent ? ' (🎓 학생)' : ''}`;
+      feedback.textContent = `✅ ${name || nickname} 님 등록 완료!${typeLabel}`;
       feedback.style.color = 'var(--turf)';
       document.getElementById('regName').value = '';
       document.getElementById('regNickname').value = '';
       document.getElementById('regPhone').value = '';
-      document.getElementById('regIsStudent').checked = false;
+      document.getElementById('regCustomerType').value = 'regular';
+      document.getElementById('regPrepaidCount').value = '';
+      document.getElementById('regPrepaidCountWrap').style.display = 'none';
     }
 
     // ---------- 검색 ----------
@@ -1560,8 +1603,8 @@
       }
       searchResults.innerHTML = currentMatches.map((c, i) => `
       <div class="search-result-item${i === highlightedIndex ? ' active' : ''}" onclick="selectCustomer('${c.id}')">
-        <span class="r-name">${escapeHtml(c.name || '')} ${c.nickname ? '<span style=\"color:var(--turf)\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${studentBadge(c)}</span>
-        <span class="r-meta">${c.isStudent ? '적립금만 적용' : c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회'}</span>
+        <span class="r-name">${escapeHtml(c.name || '')} ${c.nickname ? '<span style=\"color:var(--turf)\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${customerTypeBadge(c)}</span>
+        <span class="r-meta">${customerMetaLabel(c)}</span>
       </div>
     `).join('');
     }
@@ -1617,9 +1660,13 @@
       return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
     }
 
-    // 학생 고객(도장 서비스 없이 적립금만 적용)임을 나타내는 배지. 이름 옆에 공통으로 붙여 스태프가 한눈에 구분하게 함.
-    function studentBadge(c) {
-      return c.isStudent ? ' <span class="badge" style="background:rgba(90,150,220,0.2);color:#7fb3ff;">🎓학생</span>' : '';
+    // 학생(도장 없이 적립금만)/선불(도장·적립금 없이 잔여횟수만) 고객임을 나타내는 배지.
+    // 이름 옆에 공통으로 붙여 스태프가 한눈에 구분하게 함. 일반 고객은 빈 문자열.
+    function customerTypeBadge(c) {
+      const type = customerType(c);
+      if (type === 'student') return ' <span class="badge" style="background:rgba(90,150,220,0.2);color:#7fb3ff;">🎓학생</span>';
+      if (type === 'prepaid') return ' <span class="badge" style="background:rgba(220,150,90,0.2);color:#e0a868;">🎫선불</span>';
+      return '';
     }
 
     // ---------- 고객 상세 렌더 ----------
@@ -1636,7 +1683,10 @@
       const unusedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'unused');
       const usedCoupons = myCoupons.filter(cp => couponStatus(cp) === 'used');
       const isReady = unusedCoupons.length > 0;
-      const isStudentCustomer = !!c.isStudent;
+      const type = customerType(c);
+      const isStudentCustomer = type === 'student';
+      const isPrepaidCustomer = type === 'prepaid';
+      const noStampCustomer = isStudentCustomer || isPrepaidCustomer; // 도장/뽑기/무료쿠폰 서비스 비대상
 
       // 야간 조명 스탬프판 (10개 lamp + 1개 free lamp)
       // 5번째 실방문은 뽑기 체크포인트: 뽑기 결과가 "도장 1개 추가"이면 5·6번 lamp가 한번에 채워짐
@@ -1659,16 +1709,22 @@
       // 적립금 차감 내역
       const myDeductions = getDeductions().filter(d => d.customerId === id).sort((a, b) => new Date(b.deductedAt) - new Date(a.deductedAt));
 
-      // 학생 고객은 도장/뽑기 서비스 대상이 아니므로, 전환 전에 이미 받아둔 미사용/사용 이력이 있을 때만
+      // 선불 충전 내역
+      const myCharges = getPrepaidCharges().filter(p => p.customerId === id).sort((a, b) => new Date(b.chargedAt) - new Date(a.chargedAt));
+      const showChargeSection = isPrepaidCustomer || myCharges.length > 0;
+
+      // 학생/선불 고객은 도장/뽑기 서비스 대상이 아니므로, 전환 전에 이미 받아둔 미사용/사용 이력이 있을 때만
       // 무료쿠폰·뽑기 할인쿠폰 섹션을 보여준다(있는 혜택은 계속 쓸 수 있어야 하므로).
-      const showCouponSection = !isStudentCustomer || myCoupons.length > 0;
-      const showPrizeSection = !isStudentCustomer || myPrizes.length > 0;
+      const showCouponSection = !noStampCustomer || myCoupons.length > 0;
+      const showPrizeSection = !noStampCustomer || myPrizes.length > 0;
+      // 선불 고객은 적립금을 아예 쌓지 않으므로, 전환 전에 남아있는 적립금이 있을 때만 적립금 스탯을 보여준다.
+      const showPointsStat = !isPrepaidCustomer || c.totalPoints > 0;
 
       container.innerHTML = `
     <div class="card">
       <div class="customer-header">
         <div>
-          <div class="customer-name">${escapeHtml(c.name || '(이름 없음)')}${c.nickname ? '<span class=\"nickname\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${studentBadge(c)}</div>
+          <div class="customer-name">${escapeHtml(c.name || '(이름 없음)')}${c.nickname ? '<span class=\"nickname\">· ' + escapeHtml(c.nickname) + '</span>' : ''}${customerTypeBadge(c)}</div>
           <div class="customer-sub">${c.phone ? '📞 ' + escapeHtml(c.phone) + ' · ' : ''}등록일 ${new Date(c.registeredAt).toLocaleDateString('ko-KR')}</div>
         </div>
         <button class="btn btn-primary" onclick="openVisitModal('${c.id}')">＋ 오늘 방문 등록</button>
@@ -1683,6 +1739,9 @@
       ${isStudentCustomer ? `
       <div class="light-track-wrap">
         <div class="track-caption">🎓 학생 고객 — 도장 서비스 없이 적립금만 적용됩니다.</div>
+      </div>` : isPrepaidCustomer ? `
+      <div class="light-track-wrap">
+        <div class="track-caption">🎫 선불 고객 — 도장·적립금 없이 방문마다 잔여 횟수만 차감됩니다. (잔여 ${c.prepaidRemaining || 0}회)</div>
       </div>` : `
       <div class="light-track-wrap">
         <div class="light-track">${lamps}</div>
@@ -1690,12 +1749,19 @@
       </div>`}
 
       <div class="stat-row">
-        ${isStudentCustomer ? '' : `<div class="mini-stat"><div class="v">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}</div><div class="l">현재 사이클 도장 수</div></div>`}
+        ${!noStampCustomer ? `<div class="mini-stat"><div class="v">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}</div><div class="l">현재 사이클 도장 수</div></div>` : ''}
+        ${isPrepaidCustomer ? `
+        <div class="mini-stat">
+          <div class="v" style="color:var(--gold)">${c.prepaidRemaining || 0}회</div>
+          <div class="l">선불 잔여 횟수</div>
+          <button class="btn btn-secondary" style="margin-top:6px;padding:4px 10px;font-size:11px;" onclick="rechargePrepaid('${c.id}')">➕ 충전</button>
+        </div>` : ''}
+        ${showPointsStat ? `
         <div class="mini-stat">
           <div class="v" style="color:var(--turf)">${c.totalPoints.toLocaleString()}원</div>
           <div class="l">누적 적립금</div>
           ${c.totalPoints > 0 ? `<button class="btn btn-secondary" style="margin-top:6px;padding:4px 10px;font-size:11px;" onclick="deductPoints('${c.id}')">💰 적립금 차감</button>` : ''}
-        </div>
+        </div>` : ''}
         ${showCouponSection ? `<div class="mini-stat"><div class="v" style="color:var(--gold)">${usedCoupons.length}회</div><div class="l">누적 무료쿠폰 사용</div></div>` : ''}
         ${showPrizeSection ? `<div class="mini-stat"><div class="v" style="color:var(--gold)">${unusedPrizes.length}장 (${unusedPrizeTotal.toLocaleString()}원)</div><div class="l">보유 중인 할인쿠폰</div></div>` : ''}
       </div>
@@ -1746,6 +1812,19 @@
         `).join('')}
       </div>`}
 
+      ${!showChargeSection ? '' : `
+      <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">🎫 선불 충전 내역</h3>
+      ${myCharges.length === 0 ? '<div class="empty-hint" style="margin-bottom:22px;">아직 충전 내역이 없어요.</div>' : `
+      <div class="prize-list" style="margin-bottom:22px;">
+        ${myCharges.map(p => `
+          <div class="imminent-row">
+            <span class="name">${p.amount.toLocaleString()}회 충전
+              <span class="muted" style="margin-left:6px;">${new Date(p.chargedAt).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+            </span>
+          </div>
+        `).join('')}
+      </div>`}`}
+
       <h3 style="font-family:var(--font-display);font-size:15px;margin-bottom:10px;">방문 이력</h3>
       ${visits.length === 0 ? '<div class="empty-hint">아직 방문 기록이 없어요.</div>' : `
       <table class="history">
@@ -1763,6 +1842,7 @@
                 ${v.couponEarned ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎁쿠폰발급</span>' : ''}
                 ${v.bonusStamp ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲도장+뽑기</span>' : (v.lotteryVisit ? '<span class="tag" style="background:rgba(232,181,77,0.25);">🎲뽑기</span>' : '')}
                 ${v.discountApplied ? `<span class="tag" style="background:rgba(90,180,120,0.25);">🪙${v.discountApplied.toLocaleString()}원 차감</span>` : ''}
+                ${v.visitCustomerType === 'prepaid' ? `<span class="tag" style="background:rgba(220,150,90,0.2);">🎫선불 1회 차감</span>` : ''}
                 <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="editVisitRecord('${v.id}')" title="수정">✏️</button>
                 <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px;" onclick="deleteVisitRecord('${v.id}')" title="삭제">🗑</button>
               </td>
@@ -1783,9 +1863,12 @@
       const c = getCustomers().find(x => x.id === customerId);
       const overlay = document.getElementById('visitModalOverlay');
       updateCounterDisplay();
-      if (c.isStudent) {
+      if (customerType(c) === 'student') {
         document.getElementById('visitModalName').textContent =
           `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 🎓 학생 · 현재 적립금 ${c.totalPoints.toLocaleString()}원`;
+      } else if (customerType(c) === 'prepaid') {
+        document.getElementById('visitModalName').textContent =
+          `${c.name || ''} ${c.nickname ? '· ' + c.nickname : ''} — 🎫 선불 · 현재 잔여 ${c.prepaidRemaining || 0}회`;
       } else {
         const willHitLottery = ((c.cycleVisits || 0) + 1) === VISITS_FOR_LOTTERY;
         const willEarnCoupon = (c.visitCount + 1) >= VISITS_NEEDED_FOR_FREE;
@@ -1869,16 +1952,22 @@
       if (idx === -1) return;
 
       const c = customers[idx];
-      const points = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
-      const isStudentVisit = !!c.isStudent; // 이 방문 시점의 상태를 스냅샷으로 기록 (나중에 학생↔일반 전환해도 과거 방문의 도장/뽑기 적용 여부가 바뀌지 않도록)
+      const type = customerType(c); // 이 방문 시점의 상태를 스냅샷으로 기록 (나중에 유형을 전환해도 과거 방문의 도장/뽑기/차감 적용 여부가 바뀌지 않도록)
+
+      if (type === 'prepaid' && (c.prepaidRemaining || 0) <= 0) {
+        if (!confirm('잔여 선불 횟수가 없습니다. 그래도 이번 방문을 기록할까요?')) return;
+      }
+
+      const rawPoints = visitCounters.birdie * POINT.BIRDIE + visitCounters.eagle * POINT.EAGLE + visitCounters.hio * POINT.HOLE_IN_ONE;
+      const points = type === 'prepaid' ? 0 : rawPoints; // 선불 고객은 적립금을 쌓지 않음
 
       let bonusStamp = false;
       let lotteryVisit = false;
       let prizeAmount = null;
       let couponEarned = false;
 
-      if (isStudentVisit) {
-        // 학생 고객: 도장/뽑기/무료쿠폰 서비스 없이 적립금만 적립
+      if (type === 'student' || type === 'prepaid') {
+        // 학생/선불 고객: 도장/뽑기/무료쿠폰 서비스 없음
       } else {
         c.cycleVisits = (c.cycleVisits || 0) + 1;
         if (c.cycleVisits === VISITS_FOR_LOTTERY) {
@@ -1898,6 +1987,9 @@
       }
 
       c.totalPoints += points;
+      if (type === 'prepaid') {
+        c.prepaidRemaining = Math.max(0, (c.prepaidRemaining || 0) - 1);
+      }
 
       const visitId = uid();
       const visits = getVisits();
@@ -1913,10 +2005,10 @@
         couponEarned: false, // 도장이 다 차면 아래에서 true로 갱신
         bonusStamp: bonusStamp,
         lotteryVisit: lotteryVisit,
-        studentVisit: isStudentVisit
+        visitCustomerType: type
       });
 
-      if (!isStudentVisit && c.visitCount >= VISITS_NEEDED_FOR_FREE) {
+      if (type === 'regular' && c.visitCount >= VISITS_NEEDED_FOR_FREE) {
         // 도장 10개 완성 -> 무료쿠폰 발급(미사용), 원하는 날 "사용 처리"로 소진. 사이클은 바로 새로 시작
         couponEarned = true;
         visits[visits.length - 1].couponEarned = true;
@@ -2001,12 +2093,14 @@
         const rawPoints = v.birdies * POINT.BIRDIE + v.eagles * POINT.EAGLE + v.holeInOnes * POINT.HOLE_IN_ONE;
         const points = legacyFreeVisit ? 0 : rawPoints;
 
-        // 학생 방문(그 방문 당시 학생 상태였던 스냅샷)은 도장/뽑기/쿠폰 로직을 전부 건너뛰고 적립금만 반영한다.
-        // 현재 고객의 학생 여부가 아니라 방문 당시 기록된 studentVisit 값을 기준으로 판단하므로,
-        // 이후 학생↔일반 전환을 반복해도 과거 방문의 도장 진행/사이클(runningCount, cycleVisits)이 뒤바뀌지 않는다.
-        if (v.studentVisit) {
-          totalPoints += points;
-          v.pointsEarned = points;
+        // 학생/선불 방문(그 방문 당시 유형이었던 스냅샷)은 도장/뽑기/쿠폰 로직을 전부 건너뛴다.
+        // 현재 고객의 유형이 아니라 방문 당시 기록된 visitCustomerType(구버전은 studentVisit)을 기준으로
+        // 판단하므로, 이후 일반↔학생↔선불 전환을 반복해도 과거 방문의 도장 진행/사이클이 뒤바뀌지 않는다.
+        const visitType = v.visitCustomerType || (v.studentVisit ? 'student' : 'regular');
+        if (visitType === 'student' || visitType === 'prepaid') {
+          const creditedPoints = visitType === 'prepaid' ? 0 : points; // 선불 방문은 적립금을 쌓지 않음
+          totalPoints += creditedPoints;
+          v.pointsEarned = creditedPoints;
           v.visitNumberAtTime = runningCount;
           v.couponEarned = false;
           v.bonusStamp = false;
@@ -2103,6 +2197,12 @@
       c.visitCount = runningCount;
       c.cycleVisits = cycleVisits;
       c.totalPoints = Math.max(0, totalPoints - totalDeducted);
+
+      // 선불 잔여횟수도 "충전 총합 - 선불 방문 수"로 항상 다시 계산 (visitCount/totalPoints와 동일한 철학).
+      // myVisits는 이 함수 안에서만 메모리상 수정 중이므로(아직 저장 전), getVisits() 대신 직접 계산.
+      const totalCharged = getPrepaidCharges().filter(p => p.customerId === customerId).reduce((s, p) => s + p.amount, 0);
+      const prepaidConsumed = myVisits.filter(v => (v.visitCustomerType || (v.studentVisit ? 'student' : 'regular')) === 'prepaid').length;
+      c.prepaidRemaining = Math.max(0, totalCharged - prepaidConsumed);
 
       saveData(LS_KEYS.visits, allVisits);
       saveData(LS_KEYS.coupons, otherCoupons.concat(rebuiltCoupons));
@@ -2217,26 +2317,35 @@
       document.getElementById('statMonthPrizes').textContent = monthPrizes.length;
       document.getElementById('statTodayVisits').textContent = todayVisits.length;
 
-      // 임박 고객 (8회 이상) + 미사용 무료쿠폰 보유 고객 (사이클과 무관하게 항상 표시)
-      // 학생 고객은 도장이 더 늘지 않아 근접(near) 조건으로는 절대 뜨지 않게 제외하되,
-      // 학생 전환 전에 받아둔 미사용 쿠폰이 남아있다면 계속 노출한다.
+      // 임박 고객: 도장 8회 이상(일반만) + 선불 잔여 2회 이하(선불만) + 미사용 무료쿠폰 보유 고객(유형 무관, 항상 표시).
+      // 학생/선불 고객은 도장이 더 늘지 않으므로 도장 근접(near) 조건에서는 제외한다.
+      const PREPAID_LOW_BALANCE = 2;
       const unusedCouponCustomerIds = new Set(coupons.filter(cp => couponStatus(cp) === 'unused').map(cp => cp.customerId));
-      const imminent = customers.filter(c => (!c.isStudent && c.visitCount >= VISITS_NEEDED_FOR_FREE - 2) || unusedCouponCustomerIds.has(c.id))
-        .sort((a, b) => {
-          const aReady = unusedCouponCustomerIds.has(a.id), bReady = unusedCouponCustomerIds.has(b.id);
-          if (aReady !== bReady) return aReady ? -1 : 1;
-          return b.visitCount - a.visitCount;
-        });
+      const imminent = customers.filter(c => {
+        if (unusedCouponCustomerIds.has(c.id)) return true;
+        const type = customerType(c);
+        if (type === 'regular') return c.visitCount >= VISITS_NEEDED_FOR_FREE - 2;
+        if (type === 'prepaid') return (c.prepaidRemaining || 0) <= PREPAID_LOW_BALANCE;
+        return false;
+      }).sort((a, b) => {
+        const aReady = unusedCouponCustomerIds.has(a.id), bReady = unusedCouponCustomerIds.has(b.id);
+        if (aReady !== bReady) return aReady ? -1 : 1;
+        return b.visitCount - a.visitCount;
+      });
       const imminentList = document.getElementById('imminentList');
       if (imminent.length === 0) {
         imminentList.innerHTML = '<div class="empty-hint">아직 임박한 고객이 없어요.</div>';
       } else {
         imminentList.innerHTML = imminent.map(c => {
           const ready = unusedCouponCustomerIds.has(c.id);
+          let statusText;
+          if (ready) statusText = '🎁 쿠폰 사용가능';
+          else if (customerType(c) === 'prepaid') statusText = `🎫 잔여 ${c.prepaidRemaining || 0}회`;
+          else statusText = c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회';
           return `
       <div class="imminent-row" onclick="goToCustomer('${c.id}')">
-        <span class="name">${escapeHtml(c.name || c.nickname)} ${c.nickname && c.name ? '· ' + escapeHtml(c.nickname) : ''}${studentBadge(c)}</span>
-        <span class="badge ${ready ? 'ready' : 'near'}">${ready ? '🎁 쿠폰 사용가능' : (c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회')}</span>
+        <span class="name">${escapeHtml(c.name || c.nickname)} ${c.nickname && c.name ? '· ' + escapeHtml(c.nickname) : ''}${customerTypeBadge(c)}</span>
+        <span class="badge ${ready ? 'ready' : 'near'}">${statusText}</span>
       </div>`;
         }).join('');
       }
@@ -2248,7 +2357,7 @@
       } else {
         todayListEl.innerHTML = todayVisits.slice().reverse().map(v => {
           const c = customers.find(x => x.id === v.customerId);
-          return `<div class="imminent-row"><span class="name">${escapeHtml(c ? (c.name || c.nickname) : '(삭제된 고객)')}${c ? studentBadge(c) : ''}</span>
+          return `<div class="imminent-row"><span class="name">${escapeHtml(c ? (c.name || c.nickname) : '(삭제된 고객)')}${c ? customerTypeBadge(c) : ''}</span>
         <span class="muted">버디${v.birdies} · 이글${v.eagles} · 홀인원${v.holeInOnes} · <b style="color:var(--turf)">+${v.pointsEarned.toLocaleString()}원</b>${v.discountApplied ? ` · <b style="color:var(--gold)">🪙${v.discountApplied.toLocaleString()}원 차감</b>` : ''}</span></div>`;
         }).join('');
       }
@@ -2431,37 +2540,88 @@
         el.innerHTML = '<div class="empty-hint">일치하는 고객이 없어요.</div>';
         return;
       }
-      el.innerHTML = customers.map(c => `
+      el.innerHTML = customers.map(c => {
+        const type = customerType(c);
+        return `
     <div class="imminent-row">
-      <span class="name">${escapeHtml(c.name || '')} ${c.nickname ? '· ' + escapeHtml(c.nickname) : ''} <span class="muted">(${c.isStudent ? '적립금만 적용' : c.visitCount + '/' + VISITS_NEEDED_FOR_FREE + '회'})</span>${studentBadge(c)}</span>
+      <span class="name">${escapeHtml(c.name || '')} ${c.nickname ? '· ' + escapeHtml(c.nickname) : ''} <span class="muted">(${customerMetaLabel(c)})</span>${customerTypeBadge(c)}</span>
       <span>
+        <select style="padding:6px 8px;font-size:12px;" onchange="changeCustomerType('${c.id}', this.value)" title="고객 유형 전환">
+          <option value="regular" ${type === 'regular' ? 'selected' : ''}>일반</option>
+          <option value="student" ${type === 'student' ? 'selected' : ''}>🎓 학생</option>
+          <option value="prepaid" ${type === 'prepaid' ? 'selected' : ''}>🎫 선불</option>
+        </select>
         <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="editCustomer('${c.id}')">수정</button>
-        <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="toggleStudentStatus('${c.id}')" title="학생 여부 전환">${c.isStudent ? '🎓 일반 전환' : '🎓 학생 전환'}</button>
         <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="mergeCustomerPrompt('${c.id}')" title="중복 등록된 고객을 이 고객으로 합치기">🔗 병합</button>
         <button class="btn btn-danger" style="padding:6px 12px;font-size:12px;" onclick="deleteCustomer('${c.id}')">삭제</button>
       </span>
     </div>
-  `).join('');
+  `;
+      }).join('');
     }
 
-    // ---------- 학생 ↔ 일반 전환 ----------
-    // isStudent 플래그만 바꾼다. 기존 도장 진행/미사용 쿠폰 등은 그대로 보존되며(방문 기록마다
-    // studentVisit 스냅샷이 남아있어 과거 이력이 재계산 때 뒤바뀌지 않음), 전환 시점 이후의
-    // 새 방문부터 바뀐 상태가 적용된다.
-    function toggleStudentStatus(id) {
+    // ---------- 고객 유형 전환 (일반 / 학생 / 선불) ----------
+    // customerType 플래그만 바꾼다. 기존 도장 진행/미사용 쿠폰/선불 잔여횟수 등은 그대로 보존되며
+    // (방문 기록마다 visitCustomerType 스냅샷이 남아있어 과거 이력이 재계산 때 뒤바뀌지 않음),
+    // 전환 시점 이후의 새 방문부터 바뀐 유형의 로직이 적용된다.
+    function changeCustomerType(id, newType) {
       const customers = getCustomers();
       const c = customers.find(x => x.id === id);
-      if (!c) return;
+      if (!c) { renderDataView(); return; }
+      const prevType = customerType(c);
+      if (newType === prevType) return;
       const label = `${c.name || ''}${c.nickname ? ' · ' + c.nickname : ''}`.trim();
-      const next = !c.isStudent;
-      const msg = next
-        ? `"${label}" 님을 🎓 학생으로 전환할까요?\n지금부터 새 방문은 도장/뽑기 없이 적립금만 적립됩니다. 기존에 모은 도장·쿠폰은 그대로 보존되며, 다시 일반으로 전환하면 그대로 이어서 사용할 수 있어요.`
-        : `"${label}" 님을 일반 고객으로 전환할까요?\n지금부터 새 방문부터 도장·뽑기 서비스가 다시 적용됩니다.`;
-      if (!confirm(msg)) return;
-      c.isStudent = next;
+
+      const typeName = { regular: '일반', student: '🎓 학생', prepaid: '🎫 선불' };
+      let msg = `"${label}" 님을 ${typeName[newType]}(으)로 전환할까요?\n`;
+      if (newType === 'student') msg += '지금부터 새 방문은 도장/뽑기 없이 적립금만 적립됩니다.';
+      else if (newType === 'prepaid') msg += '지금부터 새 방문은 도장/뽑기/적립금 없이 선불 잔여횟수만 차감됩니다.';
+      else msg += '지금부터 새 방문부터 도장·뽑기·적립금 서비스가 다시 적용됩니다.';
+      msg += '\n기존에 모은 도장·쿠폰·잔여횟수는 그대로 보존되며, 나중에 이 유형으로 다시 돌아오면 그대로 이어서 사용할 수 있어요.';
+      if (!confirm(msg)) { renderDataView(); return; }
+
+      c.customerType = newType;
+
+      if (newType === 'prepaid') {
+        const totalCharged = getPrepaidCharges().filter(p => p.customerId === id).reduce((s, p) => s + p.amount, 0);
+        if (totalCharged === 0) {
+          // 처음 선불로 전환하는 경우에만 최초 충전 횟수를 물어본다 (이미 충전 이력이 있으면 그대로 이어감)
+          const input = prompt(`"${label}" 님의 선불 횟수를 입력해주세요.`, '10');
+          const amount = parseInt(String(input || '').replace(/[^0-9]/g, ''), 10);
+          if (amount > 0) {
+            const charges = getPrepaidCharges();
+            charges.push({ id: uid(), customerId: id, amount, chargedAt: new Date().toISOString() });
+            saveData(LS_KEYS.prepaidCharges, charges);
+          }
+        }
+        recomputePrepaidRemaining(c);
+      }
+
       saveData(LS_KEYS.customers, customers);
       renderDataView();
       if (currentCustomerId === id) renderCustomerDetail(id);
+    }
+
+    // ---------- 선불 충전 ----------
+    function rechargePrepaid(customerId) {
+      const customers = getCustomers();
+      const c = customers.find(x => x.id === customerId);
+      if (!c) return;
+      const input = prompt('충전할 선불 횟수를 입력해주세요.', '10');
+      if (input === null) return;
+      const amount = parseInt(String(input).replace(/[^0-9]/g, ''), 10);
+      if (!amount || amount <= 0) { alert('올바른 횟수를 입력해주세요.'); return; }
+
+      const charges = getPrepaidCharges();
+      charges.push({ id: uid(), customerId, amount, chargedAt: new Date().toISOString() });
+      saveData(LS_KEYS.prepaidCharges, charges);
+
+      recomputePrepaidRemaining(c);
+      saveData(LS_KEYS.customers, customers);
+
+      renderCustomerDetail(customerId);
+      renderDashboard();
+      alert(`✅ ${amount}회 충전 완료! (잔여 ${c.prepaidRemaining}회)`);
     }
 
     // ---------- 중복 고객 병합 ----------
@@ -2649,11 +2809,30 @@
       stuck.forEach(c => recalcCustomerFromVisits(c.id));
     }
 
+    // ---------- 마이그레이션: isStudent(boolean) -> customerType('regular'|'student'|'prepaid') ----------
+    // 학생 기능이 먼저 나왔을 때 쓰던 boolean 필드를 새 3종 유형 필드로 1회 전환한다(멱등적).
+    function migrateCustomerTypeField() {
+      const customers = getCustomers();
+      let changed = false;
+      customers.forEach(c => {
+        if (c.isStudent === true && !c.customerType) {
+          c.customerType = 'student';
+          changed = true;
+        }
+        if ('isStudent' in c) {
+          delete c.isStudent;
+          changed = true;
+        }
+      });
+      if (changed) saveData(LS_KEYS.customers, customers);
+    }
+
     // ---------- 초기 실행 ----------
     // 브라우저가 저장공간 부족 시 이 사이트 데이터를 자동으로 지우지 않도록 영구 저장을 요청 (지원 브라우저에 한함, 실패해도 무시)
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => { });
     }
+    migrateCustomerTypeField();
     migrateStuckFreeCoupons();
     renderDashboard();
   </script>
