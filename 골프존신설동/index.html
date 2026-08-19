@@ -462,7 +462,8 @@
       border-bottom: none;
     }
 
-    .search-result-item:hover {
+    .search-result-item:hover,
+    .search-result-item.active {
       background: var(--bg-panel-hover);
     }
 
@@ -1538,27 +1539,56 @@
     const searchInput = document.getElementById('searchInput');
     const searchResults = document.getElementById('searchResults');
 
-    searchInput.addEventListener('input', () => {
-      const q = searchInput.value.trim().toLowerCase();
-      if (!q) { searchResults.style.display = 'none'; return; }
-      const customers = getCustomers();
-      const matches = customers.filter(c =>
-        (c.name && c.name.toLowerCase().includes(q)) ||
-        (c.nickname && c.nickname.toLowerCase().includes(q))
-      ).slice(0, 8);
+    let currentMatches = [];
+    let highlightedIndex = -1;
 
-      if (matches.length === 0) {
+    function renderSearchResults() {
+      if (currentMatches.length === 0) {
         searchResults.innerHTML = `<div class="search-result-item"><span class="muted">일치하는 고객이 없어요.</span></div>`;
-      } else {
-        searchResults.innerHTML = matches.map(c => `
-      <div class="search-result-item" onclick="selectCustomer('${c.id}')">
+        return;
+      }
+      searchResults.innerHTML = currentMatches.map((c, i) => `
+      <div class="search-result-item${i === highlightedIndex ? ' active' : ''}" onclick="selectCustomer('${c.id}')">
         <span class="r-name">${escapeHtml(c.name || '')} ${c.nickname ? '<span style=\"color:var(--turf)\">· ' + escapeHtml(c.nickname) + '</span>' : ''}</span>
         <span class="r-meta">${c.visitCount}/${VISITS_NEEDED_FOR_FREE}회</span>
       </div>
     `).join('');
-      }
+    }
+
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!q) { searchResults.style.display = 'none'; currentMatches = []; highlightedIndex = -1; return; }
+      const customers = getCustomers();
+      currentMatches = customers.filter(c =>
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.nickname && c.nickname.toLowerCase().includes(q))
+      ).slice(0, 8);
+      highlightedIndex = currentMatches.length > 0 ? 0 : -1;
+
+      renderSearchResults();
       searchResults.style.display = 'block';
     });
+
+    searchInput.addEventListener('keydown', (e) => {
+      if (searchResults.style.display === 'none' || currentMatches.length === 0) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        highlightedIndex = (highlightedIndex + 1) % currentMatches.length;
+        renderSearchResults();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        highlightedIndex = (highlightedIndex - 1 + currentMatches.length) % currentMatches.length;
+        renderSearchResults();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const pick = currentMatches[highlightedIndex] || currentMatches[0];
+        if (pick) selectCustomer(pick.id);
+      } else if (e.key === 'Escape') {
+        searchResults.style.display = 'none';
+      }
+    });
+
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.search-wrap')) searchResults.style.display = 'none';
     });
